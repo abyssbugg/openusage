@@ -7,7 +7,7 @@ Plugin structure, manifest format, output schema, and lifecycle.
 ```
 Auto-update timer fires (or app loads)
        |
-Tauri command `run_plugin_probes(pluginIds?)`
+Tauri command `start_probe_batch({ batchId?, pluginIds? })`
        |
 For each enabled plugin:
   -> Create fresh QuickJS sandbox
@@ -51,7 +51,7 @@ Bundled plugins live under `src-tauri/resources/bundled_plugins/<id>/`.
   "links": [{ "label": "Status", "url": "https://status.example.com" }],
   "lines": [
     { "type": "badge", "label": "Plan", "scope": "overview" },
-    { "type": "progress", "label": "Usage", "scope": "overview", "primary": true },
+    { "type": "progress", "label": "Usage", "scope": "overview", "primaryOrder": 1 },
     { "type": "text", "label": "Details", "scope": "detail" }
   ]
 }
@@ -95,18 +95,18 @@ loading skeletons instantly while probes execute asynchronously.
 | `type`    | string  | Yes      | One of: `text`, `progress`, `badge`               |
 | `label`   | string  | Yes      | Static label shown in the UI for this line        |
 | `scope`   | string  | Yes      | `"overview"` or `"detail"` - where line appears   |
-| `primary` | boolean | No       | If `true`, this progress line appears in tray icon |
+| `primaryOrder` | number | No       | Lower number = higher priority for tray icon progress |
 
 - `"overview"` - shown on both Overview tab and plugin detail pages
 - `"detail"` - shown only on plugin detail pages
 
 ### Primary Progress (Tray Icon)
 
-Plugins can optionally mark one progress line as `primary: true`. This progress metric will be displayed as a horizontal bar in the system tray icon, allowing users to see usage at a glance without opening the app.
+Plugins can optionally assign `primaryOrder` to progress lines. Lower values are prioritized for tray icon display, allowing users to see usage at a glance without opening the app.
 
 Rules:
-- Only `type: "progress"` lines can be primary (the flag is ignored on other types)
-- Only the **first** `primary: true` line is used (subsequent ones are ignored)
+- Only `type: "progress"` lines can use `primaryOrder` (ignored on other types)
+- Lower `primaryOrder` values are selected first
 - Up to 4 enabled plugins with primary progress are shown in the tray (in plugin order)
 - If no data is available yet, the bar shows as a track without fill
 
@@ -116,7 +116,7 @@ Example:
 {
   "lines": [
     { "type": "badge", "label": "Plan", "scope": "overview" },
-    { "type": "progress", "label": "Plan usage", "scope": "overview", "primary": true },
+    { "type": "progress", "label": "Plan usage", "scope": "overview", "primaryOrder": 1 },
     { "type": "progress", "label": "Extra", "scope": "detail" },
     { "type": "text", "label": "Resets", "scope": "detail" }
   ]
