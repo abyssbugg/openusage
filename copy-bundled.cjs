@@ -13,7 +13,9 @@ const plugins = readdirSync(srcDir, { withFileTypes: true })
   .map((d) => d.name)
 
 for (const id of plugins) {
-  cpSync(join(srcDir, id), join(dstDir, id), { recursive: true })
+  const targetDir = join(dstDir, id)
+  cpSync(join(srcDir, id), targetDir, { recursive: true })
+  rmSync(join(targetDir, "plugin.test.js"), { force: true })
 }
 
 console.log(`Bundled ${plugins.length} plugins: ${plugins.join(", ")}`)
