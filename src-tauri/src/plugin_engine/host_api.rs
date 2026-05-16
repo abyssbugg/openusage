@@ -542,12 +542,12 @@ pub fn inject_host_api<'js>(
 
     let host = Object::new(ctx.clone())?;
     inject_log(ctx, &host, plugin_id)?;
-    inject_fs(ctx, &host)?;
+    inject_fs(ctx, &host, app_data_dir)?;
     inject_crypto(ctx, &host)?;
     inject_env(ctx, &host, plugin_id)?;
     inject_http(ctx, &host, plugin_id)?;
     inject_keychain(ctx, &host, plugin_id)?;
-    inject_sqlite(ctx, &host)?;
+    inject_sqlite(ctx, &host, app_data_dir)?;
     inject_ls(ctx, &host, plugin_id)?;
     inject_ccusage(ctx, &host, plugin_id)?;
 
@@ -588,8 +588,9 @@ fn inject_log<'js>(ctx: &Ctx<'js>, host: &Object<'js>, plugin_id: &str) -> rquic
     Ok(())
 }
 
-fn inject_fs<'js>(ctx: &Ctx<'js>, host: &Object<'js>) -> rquickjs::Result<()> {
+fn inject_fs<'js>(ctx: &Ctx<'js>, host: &Object<'js>, app_data_dir: &PathBuf) -> rquickjs::Result<()> {
     let fs_obj = Object::new(ctx.clone())?;
+    let app_data_dir_for_writes = app_data_dir.clone();
 
     fs_obj.set(
         "exists",
@@ -616,6 +617,12 @@ fn inject_fs<'js>(ctx: &Ctx<'js>, host: &Object<'js>) -> rquickjs::Result<()> {
         Function::new(
             ctx.clone(),
             move |ctx_inner: Ctx<'_>, path: String, content: String| -> rquickjs::Result<()> {
+                if !is_allowed_mutation_path(&path, &app_data_dir_for_writes) {
+                    return Err(Exception::throw_message(
+                        &ctx_inner,
+                        "fs.writeText path not allowed",
+                    ));
+                }
                 let expanded = expand_path(&path);
                 std::fs::write(&expanded, &content)
                     .map_err(|e| Exception::throw_message(&ctx_inner, &e.to_string()))
@@ -772,7 +779,20 @@ fn inject_http<'js>(ctx: &Ctx<'js>, host: &Object<'js>, plugin_id: &str) -> rqui
                 }
 
                 if req.dangerously_ignore_tls.unwrap_or(false) {
-                    builder = builder.danger_accept_invalid_certs(true);
+                    if allow_dangerous_tls_for_url(&req.url) {
+                        builder = builder.danger_accept_invalid_certs(true);
+                        log::warn!(
+                            "[plugin:{}] dangerouslyIgnoreTls enabled for local URL {}",
+                            pid,
+                            redact_url(&req.url)
+                        );
+                    } else {
+                        log::warn!(
+                            "[plugin:{}] ignored dangerouslyIgnoreTls for non-local URL {}",
+                            pid,
+                            redact_url(&req.url)
+                        );
+                    }
                 }
                 let client = builder
                     .build()
@@ -2439,8 +2459,9 @@ fn inject_keychain<'js>(
     Ok(())
 }
 
-fn inject_sqlite<'js>(ctx: &Ctx<'js>, host: &Object<'js>) -> rquickjs::Result<()> {
+fn inject_sqlite<'js>(ctx: &Ctx<'js>, host: &Object<'js>, app_data_dir: &PathBuf) -> rquickjs::Result<()> {
     let sqlite_obj = Object::new(ctx.clone())?;
+    let app_data_dir_for_exec = app_data_dir.clone();
 
     sqlite_obj.set(
         "query",
@@ -2511,6 +2532,12 @@ fn inject_sqlite<'js>(ctx: &Ctx<'js>, host: &Object<'js>) -> rquickjs::Result<()
                         "sqlite3 dot-commands are not allowed",
                     ));
                 }
+                if !is_allowed_mutation_path(&db_path, &app_data_dir_for_exec) {
+                    return Err(Exception::throw_message(
+                        &ctx_inner,
+                        "sqlite.exec path not allowed",
+                    ));
+                }
                 let expanded = expand_path(&db_path);
                 let output = std::process::Command::new("sqlite3")
                     .args([&expanded, &sql])
@@ -2545,6 +2572,18 @@ fn iso_now() -> String {
         })
 }
 
+fn allow_dangerous_tls_for_url(url: &str) -> bool {
+    let parsed = match reqwest::Url::parse(url) {
+        Ok(value) => value,
+        Err(_) => return false,
+    };
+
+    match parsed.host_str() {
+        Some(host) if host.eq_ignore_ascii_case("localhost") || host == "127.0.0.1" => true,
+        _ => false,
+    }
+}
+
 fn expand_path(path: &str) -> String {
     if path == "~" {
         if let Some(home) = dirs::home_dir() {
@@ -2557,6 +2596,55 @@ fn expand_path(path: &str) -> String {
         }
     }
     path.to_string()
+}
+
+fn canonical_scope_path(path: &Path) -> Option<PathBuf> {
+    if path.exists() {
+        path.canonicalize().ok()
+    } else if path.is_absolute() {
+        Some(path.to_path_buf())
+    } else {
+        std::env::current_dir().ok().map(|cwd| cwd.join(path))
+    }
+}
+
+fn resolve_target_path(path: &str) -> Option<PathBuf> {
+    let expanded = expand_path(path);
+    let raw = PathBuf::from(expanded);
+    let absolute = if raw.is_absolute() {
+        raw
+    } else {
+        std::env::current_dir().ok()?.join(raw)
+    };
+
+    if absolute.exists() {
+        return absolute.canonicalize().ok();
+    }
+
+    let parent = absolute.parent()?.canonicalize().ok()?;
+    let file_name = absolute.file_name()?;
+    Some(parent.join(file_name))
+}
+
+fn is_allowed_mutation_path(path: &str, app_data_dir: &Path) -> bool {
+    let candidate = match resolve_target_path(path) {
+        Some(value) => value,
+        None => return false,
+    };
+
+    if let Some(app_scope) = canonical_scope_path(app_data_dir) {
+        if candidate.starts_with(&app_scope) {
+            return true;
+        }
+    }
+
+    if let Some(home_scope) = dirs::home_dir().and_then(|p| canonical_scope_path(&p)) {
+        if candidate.starts_with(&home_scope) {
+            return true;
+        }
+    }
+
+    false
 }
 
 #[cfg(test)]
@@ -3432,6 +3520,41 @@ mod tests {
                 "20260131"
             ]
         );
+    }
+
+    #[test]
+    fn dangerous_tls_gate_allows_only_local_urls() {
+        assert!(allow_dangerous_tls_for_url("https://localhost:8443/status"));
+        assert!(allow_dangerous_tls_for_url("https://127.0.0.1:8443/status"));
+
+        assert!(!allow_dangerous_tls_for_url("https://example.com/api"));
+        assert!(!allow_dangerous_tls_for_url("http://internal.lan/api"));
+        assert!(!allow_dangerous_tls_for_url("not-a-url"));
+    }
+
+    #[test]
+    fn mutation_path_gate_scopes_to_home_and_app_data() {
+        let app_dir = std::env::temp_dir().join(format!("openusage-host-api-{}", std::process::id()));
+        let nested = app_dir.join("plugins_data").join("cursor");
+        std::fs::create_dir_all(&nested).expect("create test app dir");
+
+        let app_file = nested.join("state.json");
+        assert!(is_allowed_mutation_path(
+            app_file.to_string_lossy().as_ref(),
+            &app_dir
+        ));
+
+        if let Some(home) = dirs::home_dir() {
+            let home_file = home.join(".openusage-test-write.txt");
+            assert!(is_allowed_mutation_path(
+                home_file.to_string_lossy().as_ref(),
+                &app_dir
+            ));
+        }
+
+        assert!(!is_allowed_mutation_path("/etc/passwd", &app_dir));
+
+        let _ = std::fs::remove_dir_all(&app_dir);
     }
 
     #[test]

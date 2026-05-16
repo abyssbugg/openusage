@@ -52,6 +52,10 @@ fn handle_connection(mut stream: TcpStream) {
     let mut parts = first_line.split_whitespace();
     let method = parts.next().unwrap_or("");
     let raw_path = parts.next().unwrap_or("");
+    let origin = request
+        .lines()
+        .find_map(|line| line.strip_prefix("Origin:"))
+        .map(|value| value.trim().to_string());
 
     // Strip query string and trailing slash (but keep root "/v1/usage" intact)
     let path = raw_path.split('?').next().unwrap_or(raw_path);
@@ -61,58 +65,64 @@ fn handle_connection(mut stream: TcpStream) {
         path
     };
 
-    let response = route(method, path);
+    let response = route(method, path, origin.as_deref());
     let _ = stream.write_all(response.as_bytes());
     let _ = stream.flush();
 }
 
-fn route(method: &str, path: &str) -> String {
+fn route(method: &str, path: &str, origin: Option<&str>) -> String {
+    if let Some(value) = origin {
+        if !is_allowed_origin(value) {
+            return response_forbidden("origin_not_allowed");
+        }
+    }
+
     // Match routes
     if path == "/v1/usage" {
         return match method {
-            "GET" => handle_get_usage_collection(),
-            "OPTIONS" => response_no_content(),
-            _ => response_method_not_allowed(),
+            "GET" => handle_get_usage_collection(origin),
+            "OPTIONS" => response_no_content(origin),
+            _ => response_method_not_allowed(origin),
         };
     }
 
     if let Some(provider_id) = path.strip_prefix("/v1/usage/") {
         if !provider_id.is_empty() && !provider_id.contains('/') {
             return match method {
-                "GET" => handle_get_usage_single(provider_id),
-                "OPTIONS" => response_no_content(),
-                _ => response_method_not_allowed(),
+                "GET" => handle_get_usage_single(provider_id, origin),
+                "OPTIONS" => response_no_content(origin),
+                _ => response_method_not_allowed(origin),
             };
         }
     }
 
-    response_not_found("not_found")
+    response_not_found("not_found", origin)
 }
 
-fn handle_get_usage_collection() -> String {
+fn handle_get_usage_collection(origin: Option<&str>) -> String {
     let snapshots = {
         let state = cache_state().lock().expect("cache state poisoned");
         enabled_snapshots_ordered(&state)
     };
     let body = serde_json::to_string(&snapshots).unwrap_or_else(|_| "[]".to_string());
-    response_json(200, "OK", &body)
+    response_json(200, "OK", &body, origin)
 }
 
-fn handle_get_usage_single(provider_id: &str) -> String {
+fn handle_get_usage_single(provider_id: &str, origin: Option<&str>) -> String {
     let state = cache_state().lock().expect("cache state poisoned");
 
     // Check if provider is known at all
     let is_known = state.known_plugin_ids.iter().any(|id| id == provider_id);
     if !is_known {
-        return response_not_found("provider_not_found");
+        return response_not_found("provider_not_found", origin);
     }
 
     match state.snapshots.get(provider_id) {
         Some(snapshot) => {
             let body = serde_json::to_string(snapshot).unwrap_or_else(|_| "{}".to_string());
-            response_json(200, "OK", &body)
+            response_json(200, "OK", &body, origin)
         }
-        None => response_no_content(),
+        None => response_no_content(origin),
     }
 }
 
@@ -120,37 +130,65 @@ fn handle_get_usage_single(provider_id: &str) -> String {
 // HTTP response builders
 // ---------------------------------------------------------------------------
 
-const CORS_HEADERS: &str = "\
-Access-Control-Allow-Origin: *\r\n\
-Access-Control-Allow-Methods: GET, OPTIONS\r\n\
-Access-Control-Allow-Headers: Content-Type";
+fn is_allowed_origin(origin: &str) -> bool {
+    let origin = origin.trim().to_ascii_lowercase();
+    if !origin.starts_with("http://") {
+        return false;
+    }
+    let host_port = origin["http://".len()..]
+        .split('/')
+        .next()
+        .unwrap_or("");
+    let host = host_port.split(':').next().unwrap_or("");
+    host == "localhost" || host == "127.0.0.1"
+}
 
-fn response_json(status: u16, reason: &str, body: &str) -> String {
+fn cors_headers(origin: Option<&str>) -> String {
+    let mut headers = String::new();
+
+    if let Some(origin) = origin {
+        if is_allowed_origin(origin) {
+            headers.push_str(&format!("Access-Control-Allow-Origin: {}\\r\\n", origin.trim()));
+            headers.push_str("Vary: Origin\\r\\n");
+        }
+    }
+
+    headers.push_str("Access-Control-Allow-Methods: GET, OPTIONS\\r\\n");
+    headers.push_str("Access-Control-Allow-Headers: Content-Type");
+    headers
+}
+
+fn response_json(status: u16, reason: &str, body: &str, origin: Option<&str>) -> String {
     format!(
         "HTTP/1.1 {} {}\r\nConnection: close\r\nContent-Type: application/json; charset=utf-8\r\n{}\r\nContent-Length: {}\r\n\r\n{}",
         status,
         reason,
-        CORS_HEADERS,
+        cors_headers(origin),
         body.len(),
         body,
     )
 }
 
-fn response_no_content() -> String {
+fn response_no_content(origin: Option<&str>) -> String {
     format!(
         "HTTP/1.1 204 No Content\r\nConnection: close\r\n{}\r\n\r\n",
-        CORS_HEADERS,
+        cors_headers(origin),
     )
 }
 
-fn response_not_found(error_code: &str) -> String {
+fn response_not_found(error_code: &str, origin: Option<&str>) -> String {
     let body = format!(r#"{{"error":"{}"}}"#, error_code);
-    response_json(404, "Not Found", &body)
+    response_json(404, "Not Found", &body, origin)
 }
 
-fn response_method_not_allowed() -> String {
+fn response_method_not_allowed(origin: Option<&str>) -> String {
     let body = r#"{"error":"method_not_allowed"}"#;
-    response_json(405, "Method Not Allowed", body)
+    response_json(405, "Method Not Allowed", body, origin)
+}
+
+fn response_forbidden(error_code: &str) -> String {
+    let body = format!(r#"{{"error":"{}"}}"#, error_code);
+    response_json(403, "Forbidden", &body, None)
 }
 
 #[cfg(test)]
@@ -171,27 +209,27 @@ mod tests {
 
     #[test]
     fn route_get_usage_returns_200() {
-        let resp = route("GET", "/v1/usage");
+        let resp = route("GET", "/v1/usage", None);
         assert!(resp.starts_with("HTTP/1.1 200"));
     }
 
     #[test]
     fn route_unknown_path_returns_404() {
-        let resp = route("GET", "/v2/something");
+        let resp = route("GET", "/v2/something", None);
         assert!(resp.starts_with("HTTP/1.1 404"));
     }
 
     #[test]
     fn route_post_returns_405() {
-        let resp = route("POST", "/v1/usage");
+        let resp = route("POST", "/v1/usage", None);
         assert!(resp.starts_with("HTTP/1.1 405"));
     }
 
     #[test]
     fn route_options_returns_204_with_cors() {
-        let resp = route("OPTIONS", "/v1/usage");
+        let resp = route("OPTIONS", "/v1/usage", Some("http://127.0.0.1:8080"));
         assert!(resp.starts_with("HTTP/1.1 204"));
-        assert!(resp.contains("Access-Control-Allow-Origin: *"));
+        assert!(resp.contains("Access-Control-Allow-Origin: http://127.0.0.1:8080"));
     }
 
     #[test]
@@ -203,7 +241,7 @@ mod tests {
             state.snapshots.clear();
         }
 
-        let resp = route("GET", "/v1/usage/nonexistent");
+        let resp = route("GET", "/v1/usage/nonexistent", None);
         assert!(resp.starts_with("HTTP/1.1 404"));
         assert!(resp.contains("provider_not_found"));
     }
@@ -217,7 +255,7 @@ mod tests {
             state.snapshots.clear();
         }
 
-        let resp = route("GET", "/v1/usage/claude");
+        let resp = route("GET", "/v1/usage/claude", None);
         assert!(resp.starts_with("HTTP/1.1 204"));
     }
 
@@ -232,22 +270,29 @@ mod tests {
                 .insert("claude".to_string(), make_snapshot("claude", "Claude"));
         }
 
-        let resp = route("GET", "/v1/usage/claude");
+        let resp = route("GET", "/v1/usage/claude", None);
         assert!(resp.starts_with("HTTP/1.1 200"));
         assert!(resp.contains("fetchedAt"));
     }
 
     #[test]
     fn route_options_on_provider_returns_204() {
-        let resp = route("OPTIONS", "/v1/usage/claude");
+        let resp = route("OPTIONS", "/v1/usage/claude", Some("http://localhost:3000"));
         assert!(resp.starts_with("HTTP/1.1 204"));
         assert!(resp.contains("Access-Control-Allow-Methods: GET, OPTIONS"));
     }
 
     #[test]
     fn response_json_includes_cors_headers() {
-        let resp = response_json(200, "OK", "[]");
-        assert!(resp.contains("Access-Control-Allow-Origin: *"));
+        let resp = response_json(200, "OK", "[]", Some("http://localhost:5173"));
+        assert!(resp.contains("Access-Control-Allow-Origin: http://localhost:5173"));
         assert!(resp.contains("Content-Type: application/json; charset=utf-8"));
+    }
+
+    #[test]
+    fn route_disallowed_origin_returns_403() {
+        let resp = route("GET", "/v1/usage", Some("https://example.com"));
+        assert!(resp.starts_with("HTTP/1.1 403"));
+        assert!(resp.contains("origin_not_allowed"));
     }
 }
