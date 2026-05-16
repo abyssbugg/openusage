@@ -140,6 +140,9 @@
 - Update plugin schema docs to `start_probe_batch({ batchId?, pluginIds? })` and `primaryOrder` semantics.
 - Update README supported providers list to include all shipped providers including Synthetic.
 
+### Providers
+- Add Warp provider metrics for `Add-on Credit` and `Purchased This Month` from billing metadata.
+
 ## v0.6.15
 
 ### New Features
