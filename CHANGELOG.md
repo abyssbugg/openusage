@@ -117,6 +117,31 @@
 - [b9e9f30](https://github.com/robinebers/openusage/commit/b9e9f309d86b0f2c01bf6a9e49ad9e2e0d69d36b) Merge pull request #413 from robinebers/cursor/1823929a by @robinebers
 - [de8cf31](https://github.com/robinebers/openusage/commit/de8cf31d0860483309e757d295a84574de193767) Merge pull request #386 from DoozyX/claude/preserve-usage-on-refresh-1pNCN by @DoozyX
 - [77ef460](https://github.com/robinebers/openusage/commit/77ef46033a5ce8a465c74c0eed7b683fb82545a5) Merge pull request #398 from KYankee6/fix/zai-env-header-noise by @KYankee6
+## Unreleased
+
+### Security & Hardening
+- Replace `csp: null` with an explicit CSP policy in Tauri config.
+- Restrict local HTTP API CORS to localhost/127.0.0.1 origins and reject disallowed browser origins.
+- Gate `dangerouslyIgnoreTls` to local URLs only (`localhost`/`127.0.0.1`).
+- Restrict plugin mutation surfaces by scoping `fs.writeText` and `sqlite.exec` paths to user/app-data scopes.
+
+### Reliability
+- Ensure `src-tauri/resources/bundled_plugins/_keep/KEEP` exists during Rust build/test so resource globs always resolve.
+- Emit structured `probe:result` error output when plugin execution panics.
+- Finalize pending plugin states on batch-complete with explicit fallback error messaging.
+- Add regression tests for TLS gating, mutation path gating, panic output, and batch-complete finalization.
+
+### Tooling & CI
+- Add `rust-tests` job in CI (`cargo test -q --manifest-path src-tauri/Cargo.toml`).
+- Upgrade vulnerable toolchain dependencies (`vite`, `rollup`, `picomatch`, `postcss`, `vitest`, `@vitest/coverage-v8`).
+- Add bundled plugin artifact guard script and CI check to block `.test.js` files in packaged resources.
+
+### Docs
+- Update plugin schema docs to `start_probe_batch({ batchId?, pluginIds? })` and `primaryOrder` semantics.
+- Update README supported providers list to include all shipped providers including Synthetic.
+
+### Providers
+- Add Warp provider metrics for `Add-on Credit` and `Purchased This Month` from billing metadata.
 
 ## v0.6.15
 

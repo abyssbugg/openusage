@@ -1,0 +1,15 @@
+{
+  "schemaVersion": 1,
+  "id": "warp",
+  "name": "Warp",
+  "version": "0.0.1",
+  "entry": "plugin.js",
+  "icon": "icon.svg",
+  "brandColor": "#353534",
+  "lines": [
+    { "type": "progress", "label": "Requests", "scope": "overview", "primaryOrder": 1 },
+    { "type": "text", "label": "Cycle", "scope": "detail" },
+    { "type": "text", "label": "Add-on Credit", "scope": "detail" },
+    { "type": "text", "label": "Purchased This Month", "scope": "detail" }
+  ]
+}

@@ -20,8 +20,22 @@ jobs:
 
       - run: bun install
 
+      - name: Validate bundled plugin artifacts
+        run: bun run bundle:plugins && bun run bundle:plugins:check
+
       - name: Type-check and build
         run: bun run build
 
       - name: Run tests
         run: bun run test
+
+  rust-tests:
+    name: Rust Tests (src-tauri)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Run Rust tests
+        run: cargo test -q --manifest-path src-tauri/Cargo.toml

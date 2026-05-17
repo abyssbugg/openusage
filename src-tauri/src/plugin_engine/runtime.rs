@@ -151,6 +151,10 @@ pub fn run_probe(plugin: &LoadedPlugin, app_data_dir: &PathBuf, app_version: &st
     })
 }
 
+pub fn panic_output(plugin: &LoadedPlugin) -> PluginOutput {
+    error_output(plugin, "plugin panicked".to_string())
+}
+
 fn parse_lines(result: &Object) -> Result<Vec<MetricLine>, String> {
     let lines: Array = result
         .get("lines")
@@ -559,5 +563,24 @@ mod tests {
             obj.get("resets_at").is_none(),
             "did not expect resets_at key"
         );
+    }
+
+    #[test]
+    fn panic_output_emits_error_badge() {
+        let plugin = test_plugin(
+            r#"
+            globalThis.__openusage_plugin = {
+                probe() {
+                    return { lines: [] };
+                }
+            };
+            "#,
+        );
+
+        let output = panic_output(&plugin);
+        assert_eq!(output.provider_id, "test");
+        assert_eq!(output.display_name, "Test");
+        assert_eq!(output.lines.len(), 1);
+        assert_eq!(error_text(output), "plugin panicked");
     }
 }
