@@ -3953,6 +3953,7 @@ wait
         std::fs::set_permissions(&script_path, permissions).expect("make script executable");
 
         let opts = CcusageQueryOpts::default();
+        let timeout = Duration::from_secs(2);
         let start = Instant::now();
         let result = run_ccusage_with_runner_timeout(
             CcusageRunnerKind::Bunx,
@@ -3960,13 +3961,22 @@ wait
             &opts,
             CcusageProvider::Codex,
             "codex",
-            Duration::from_millis(100),
+            timeout,
         );
 
         assert_eq!(result, CcusageRunnerResult::TimedOut);
         assert!(
-            start.elapsed() < Duration::from_secs(3),
+            start.elapsed() < timeout + Duration::from_secs(2),
             "timeout cleanup should not hang on inherited stdout/stderr pipes"
+        );
+
+        let pid_file_deadline = Instant::now() + Duration::from_secs(1);
+        while !pid_path.exists() && Instant::now() < pid_file_deadline {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(
+            pid_path.exists(),
+            "descendant pid should be written before timeout cleanup"
         );
 
         let descendant_pid: i32 = std::fs::read_to_string(&pid_path)
