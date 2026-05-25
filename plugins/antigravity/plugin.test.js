@@ -3,7 +3,7 @@ import { makeCtx } from "../test-helpers.js"
 
 const loadPlugin = async () => {
   await import("./plugin.js")
-  return globalThis.__openusage_plugin
+  return globalThis.__usage_plugin
 }
 
 // --- Fixtures ---
@@ -110,10 +110,13 @@ function setupLsMock(ctx, discovery, responseBody) {
   })
 }
 
-function setupSqliteMock(ctx, authJson, protoBase64) {
+function setupSqliteMock(ctx, authJson, protoBase64, unifiedOauthBase64) {
   ctx.host.sqlite.query.mockImplementation((db, sql) => {
     if (sql.includes("agentManagerInitState") && protoBase64) {
       return JSON.stringify([{ value: protoBase64 }])
+    }
+    if (sql.includes("antigravityUnifiedStateSync.oauthToken") && unifiedOauthBase64) {
+      return JSON.stringify([{ value: unifiedOauthBase64 }])
     }
     if (sql.includes("antigravityAuthStatus") && authJson) {
       return JSON.stringify([{ value: authJson }])
@@ -149,11 +152,34 @@ function makeProtobufBase64(ctx, accessToken, refreshToken, expirySeconds) {
   return ctx.base64.encode(outer)
 }
 
+function makeUnifiedSyncBase64(ctx, sentinelKey, payloadBase64) {
+  function encodeVarint(n) {
+    var bytes = ""
+    while (n > 0x7f) {
+      bytes += String.fromCharCode((n & 0x7f) | 0x80)
+      n = Math.floor(n / 128)
+    }
+    bytes += String.fromCharCode(n & 0x7f)
+    return bytes
+  }
+  function encodeField(fieldNum, wireType, data) {
+    var tag = encodeVarint(fieldNum * 8 + wireType)
+    if (wireType === 2) return tag + encodeVarint(data.length) + data
+    if (wireType === 0) return tag + encodeVarint(data)
+    return ""
+  }
+
+  var payload = encodeField(1, 2, payloadBase64)
+  var wrapper = encodeField(1, 2, sentinelKey) + encodeField(2, 2, payload)
+  var outer = encodeField(1, 2, wrapper)
+  return ctx.base64.encode(outer)
+}
+
 // --- Tests ---
 
 describe("antigravity plugin", () => {
   beforeEach(() => {
-    delete globalThis.__openusage_plugin
+    delete globalThis.__usage_plugin
     vi.resetModules()
   })
 
@@ -721,6 +747,40 @@ describe("antigravity plugin", () => {
     const result = plugin.probe(ctx)
 
     expect(capturedAuth).toBe("Bearer ya29.test-access")
+    expect(result.lines.length).toBeGreaterThan(0)
+  })
+
+  it("reads unified oauth-token state when legacy jetski tokens are absent", async () => {
+    const ctx = makeCtx()
+    const futureExpiry = Math.floor(Date.now() / 1000) + 3600
+    const protoB64 = makeProtobufBase64(
+      ctx,
+      "ya29.unified-access",
+      "1//refresh-token",
+      futureExpiry
+    )
+    const unifiedB64 = makeUnifiedSyncBase64(
+      ctx,
+      "oauthTokenInfoSentinelKey",
+      protoB64
+    )
+    setupSqliteMock(ctx, null, null, unifiedB64)
+    ctx.host.ls.discover.mockReturnValue(null)
+
+    let capturedAuth = null
+    ctx.host.http.request.mockImplementation((opts) => {
+      const url = String(opts.url)
+      if (url.includes("fetchAvailableModels")) {
+        capturedAuth = opts.headers.Authorization
+        return { status: 200, bodyText: JSON.stringify(makeCloudCodeResponse()) }
+      }
+      return { status: 500, bodyText: "" }
+    })
+
+    const plugin = await loadPlugin()
+    const result = plugin.probe(ctx)
+
+    expect(capturedAuth).toBe("Bearer ya29.unified-access")
     expect(result.lines.length).toBeGreaterThan(0)
   })
 

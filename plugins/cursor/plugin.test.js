@@ -3,7 +3,7 @@ import { makeCtx } from "../test-helpers.js"
 
 const loadPlugin = async () => {
   await import("./plugin.js")
-  return globalThis.__openusage_plugin
+  return globalThis.__usage_plugin
 }
 
 function makeJwt(payload) {
@@ -15,7 +15,7 @@ function makeJwt(payload) {
 
 describe("cursor plugin", () => {
   beforeEach(() => {
-    delete globalThis.__openusage_plugin
+    delete globalThis.__usage_plugin
     vi.resetModules()
   })
 
@@ -317,6 +317,62 @@ describe("cursor plugin", () => {
     expect(totalLine.format).toEqual({ kind: "percent" })
     expect(totalLine.used).toBe(0)
     expect(totalLine.limit).toBe(100)
+  })
+
+  it("does not treat a free account with zero pooled limit as team", async () => {
+    const ctx = makeCtx()
+    const accessToken = makeJwt({ sub: "google-oauth2|user_abc123", exp: 9999999999 })
+    let requestBasedFallbackCalled = false
+
+    ctx.host.sqlite.query.mockReturnValue(JSON.stringify([{ value: accessToken }]))
+    ctx.host.http.request.mockImplementation((opts) => {
+      const url = String(opts.url)
+      if (url.includes("GetCurrentPeriodUsage")) {
+        return {
+          status: 200,
+          bodyText: JSON.stringify({
+            billingCycleStart: "1777418628089",
+            billingCycleEnd: "1780010628089",
+            planUsage: {
+              totalSpend: 102,
+              autoPercentUsed: 100,
+              apiPercentUsed: 0,
+              totalPercentUsed: 51,
+            },
+            spendLimitUsage: {
+              pooledLimit: 0,
+              pooledRemaining: 0,
+              individualLimit: 0,
+              limitType: "user",
+            },
+          }),
+        }
+      }
+      if (url.includes("GetPlanInfo")) {
+        return {
+          status: 200,
+          bodyText: JSON.stringify({ planInfo: { planName: "Free", price: "Free" } }),
+        }
+      }
+      if (url.includes("cursor.com/api/usage") || url.includes("api2.cursor.sh/auth/usage")) {
+        requestBasedFallbackCalled = true
+        return {
+          status: 200,
+          bodyText: JSON.stringify({ "gpt-4": { maxRequestUsage: null } }),
+        }
+      }
+      return { status: 200, bodyText: "{}" }
+    })
+
+    const plugin = await loadPlugin()
+    const result = plugin.probe(ctx)
+    expect(result.plan).toBe("Free")
+    const totalLine = result.lines.find((line) => line.label === "Total usage")
+    expect(totalLine).toBeTruthy()
+    expect(totalLine.format).toEqual({ kind: "percent" })
+    expect(totalLine.used).toBe(51)
+    expect(totalLine.limit).toBe(100)
+    expect(requestBasedFallbackCalled).toBe(false)
   })
 
   it("renders percent-only usage when plan info is unavailable", async () => {
@@ -814,6 +870,67 @@ describe("cursor plugin", () => {
 
     const plugin = await loadPlugin()
     expect(() => plugin.probe(ctx)).toThrow("Team request-based usage data unavailable")
+  })
+  it("falls back to bearer-auth request usage when session-cookie usage fails", async () => {
+    const ctx = makeCtx()
+    const accessToken = makeJwt({ sub: "google-oauth2|user_abc123", exp: 9999999999 })
+    let sawSessionUsage = false
+    let sawBearerUsage = false
+
+    ctx.host.sqlite.query.mockReturnValue(
+      JSON.stringify([{ value: accessToken }])
+    )
+    ctx.host.http.request.mockImplementation((opts) => {
+      const url = String(opts.url)
+      if (url.includes("GetCurrentPeriodUsage")) {
+        return {
+          status: 200,
+          bodyText: JSON.stringify({
+            billingCycleStart: "1772124774973",
+            billingCycleEnd: "1772124774973",
+          }),
+        }
+      }
+      if (url.includes("GetPlanInfo")) {
+        return {
+          status: 200,
+          bodyText: JSON.stringify({
+            planInfo: { planName: "Enterprise" },
+          }),
+        }
+      }
+      if (url.includes("cursor.com/api/usage")) {
+        sawSessionUsage = true
+        expect(opts.headers.Cookie).toBe(
+          "WorkosCursorSessionToken=user_abc123%3A%3A" + accessToken
+        )
+        return { status: 500, bodyText: "" }
+      }
+      if (url.includes("api2.cursor.sh/auth/usage")) {
+        sawBearerUsage = true
+        expect(opts.headers.Authorization).toBe("Bearer " + accessToken)
+        return {
+          status: 200,
+          bodyText: JSON.stringify({
+            "gpt-4": {
+              numRequests: 211,
+              maxRequestUsage: 500,
+            },
+            startOfMonth: "2026-02-01T06:12:57.000Z",
+          }),
+        }
+      }
+      return { status: 200, bodyText: "{}" }
+    })
+
+    const plugin = await loadPlugin()
+    const result = plugin.probe(ctx)
+    expect(sawSessionUsage).toBe(true)
+    expect(sawBearerUsage).toBe(true)
+    const reqLine = result.lines.find((line) => line.label === "Requests")
+    expect(reqLine).toBeTruthy()
+    expect(reqLine.used).toBe(211)
+    expect(reqLine.limit).toBe(500)
   })
 
   it("falls back to REST request usage when plan info is unavailable", async () => {

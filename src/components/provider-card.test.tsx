@@ -105,9 +105,12 @@ describe("ProviderCard", () => {
     )
     expect(screen.getByText("Label")).toBeInTheDocument()
     expect(screen.getByText("Pro")).toBeInTheDocument()
-    expect(screen.getByText("32%")).toBeInTheDocument()
-    expect(screen.getByText("$12.34")).toBeInTheDocument()
-    expect(screen.getByText("342 credits")).toBeInTheDocument()
+    expect(screen.getByText("32% used")).toBeInTheDocument()
+    expect(screen.getByText("68% left")).toBeInTheDocument()
+    expect(screen.getByText("$12.34 used")).toBeInTheDocument()
+    expect(screen.getByText("$87.66 left")).toBeInTheDocument()
+    expect(screen.getByText("342 credits used")).toBeInTheDocument()
+    expect(screen.getByText("658 credits left")).toBeInTheDocument()
   })
 
   it("renders quick links and opens URL", async () => {
@@ -188,7 +191,7 @@ describe("ProviderCard", () => {
     expect(formatFixedPrecisionNumber(1234567.89)).toBe("1,234,567.89")
   })
 
-  it("supports displayMode=left for percent (number + bar fill)", () => {
+  it("shows both values while provider card bar always shows used", () => {
     render(
       <ProviderCard
         name="Left"
@@ -198,11 +201,12 @@ describe("ProviderCard", () => {
         ]}
       />
     )
+    expect(screen.getByText("42% used")).toBeInTheDocument()
     expect(screen.getByText("58% left")).toBeInTheDocument()
-    expect(screen.getByRole("progressbar")).toHaveAttribute("aria-valuenow", "58")
+    expect(screen.getByRole("progressbar")).toHaveAttribute("aria-valuenow", "42")
   })
 
-  it("uses elapsed-time marker position in displayMode=left", () => {
+  it("uses elapsed-time marker position in provider card progress bar", () => {
     vi.useFakeTimers()
     const now = new Date("2026-02-02T18:00:00.000Z")
     vi.setSystemTime(now)
@@ -225,7 +229,7 @@ describe("ProviderCard", () => {
     )
     const marker = document.querySelector<HTMLElement>('[data-slot="progress-marker"]')
     expect(marker).toBeTruthy()
-    expect(marker?.style.left).toBe("25%")
+    expect(marker?.style.left).toBe("75%")
     vi.useRealTimers()
   })
 

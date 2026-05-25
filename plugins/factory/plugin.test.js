@@ -4,13 +4,20 @@ import { makeCtx } from "../test-helpers.js"
 
 const loadPlugin = async () => {
   await import("./plugin.js")
-  return globalThis.__openusage_plugin
+  return globalThis.__usage_plugin
 }
 
 // Helper to create a valid JWT with configurable expiry
-function makeJwt(expSeconds) {
+function makeJwt(expSecondsOrClaims, extraClaims) {
+  const claims = typeof expSecondsOrClaims === "number"
+    ? { exp: expSecondsOrClaims, ...extraClaims }
+    : expSecondsOrClaims
   const header = btoa(JSON.stringify({ alg: "HS256", typ: "JWT" }))
-  const payload = btoa(JSON.stringify({ exp: expSeconds, org_id: "org_123", email: "test@example.com" }))
+  const payload = btoa(JSON.stringify({
+    org_id: "org_123",
+    email: "test@example.com",
+    ...claims,
+  }))
   const sig = "signature"
   return `${header}.${payload}.${sig}`
 }
@@ -29,7 +36,7 @@ function makeEncryptedAuthV2(payload) {
 
 describe("factory plugin", () => {
   beforeEach(() => {
-    delete globalThis.__openusage_plugin
+    delete globalThis.__usage_plugin
     vi.resetModules()
   })
 
@@ -500,6 +507,191 @@ describe("factory plugin", () => {
     expect(standardLine).toBeTruthy()
     expect(standardLine.used).toBe(5000000)
     expect(standardLine.limit).toBe(20000000)
+  })
+
+  it("formats Factory usage-limit, extra usage, Droid Core, and managed compute metrics", async () => {
+    const ctx = makeCtx()
+    const futureExp = Math.floor(Date.now() / 1000) + 7 * 24 * 60 * 60
+    ctx.host.fs.writeText("~/.factory/auth.json", JSON.stringify({
+      access_token: makeJwt(futureExp),
+      refresh_token: "refresh",
+    }))
+    ctx.host.http.request.mockReturnValue({
+      status: 200,
+      headers: {},
+      bodyText: JSON.stringify({
+        usage: {
+          plan: "Standard",
+          extraUsage: {
+            remainingUsd: 0,
+          },
+          standardUsage: {
+            fiveHour: {
+              usedPercent: 2,
+              startDate: 1770623326000,
+              endDate: 1770641326000,
+            },
+            weekly: {
+              usedRatio: 0.01,
+              startDate: 1770623326000,
+              endDate: 1771228126000,
+            },
+            monthly: {
+              usedPercent: 1,
+              startDate: 1770623326000,
+              endDate: 1773128926000,
+            },
+          },
+          droidCore: {
+            enabled: true,
+          },
+          managedComputers: {
+            usedHours: 0,
+            includedHours: 10,
+            startDate: 1770623326000,
+            endDate: 1772178526000,
+          },
+        },
+      }),
+    })
+
+    const plugin = await loadPlugin()
+    const result = plugin.probe(ctx)
+
+    expect(result.plan).toBe("Standard + Droid Core")
+    expect(result.lines.find((line) => line.label === "Extra Usage")).toMatchObject({
+      type: "text",
+      value: "$0.00 remaining",
+    })
+    expect(result.lines.find((line) => line.label === "5-hour usage")).toMatchObject({
+      type: "progress",
+      used: 2,
+      limit: 100,
+      format: { kind: "percent" },
+    })
+    expect(result.lines.find((line) => line.label === "Weekly usage")).toMatchObject({
+      type: "progress",
+      used: 1,
+      limit: 100,
+      format: { kind: "percent" },
+    })
+    expect(result.lines.find((line) => line.label === "Monthly usage")).toMatchObject({
+      type: "progress",
+      used: 1,
+      limit: 100,
+      format: { kind: "percent" },
+    })
+    expect(result.lines.find((line) => line.label === "Droid Core")).toMatchObject({
+      type: "badge",
+      text: "Enabled",
+    })
+    expect(result.lines.find((line) => line.label === "Managed Computers")).toMatchObject({
+      type: "progress",
+      used: 0,
+      limit: 10,
+      format: { kind: "count", suffix: "h" },
+    })
+  })
+  it("sends browser-like headers and userId when available", async () => {
+    const ctx = makeCtx()
+    const futureExp = Math.floor(Date.now() / 1000) + 7 * 24 * 60 * 60
+    const accessToken = makeJwt({ exp: futureExp, sub: "user_abc123" })
+    ctx.host.fs.writeText("~/.factory/auth.json", JSON.stringify({
+      access_token: accessToken,
+      refresh_token: "refresh",
+    }))
+    ctx.host.http.request.mockImplementation((opts) => {
+      expect(opts.method).toBe("POST")
+      expect(opts.url).toBe("https://api.factory.ai/api/organization/subscription/usage")
+      expect(opts.headers.Authorization).toBe("Bearer " + accessToken)
+      expect(opts.headers.Accept).toBe("application/json")
+      expect(opts.headers.Origin).toBe("https://app.factory.ai")
+      expect(opts.headers.Referer).toBe("https://app.factory.ai/")
+      expect(opts.headers["x-factory-client"]).toBe("web-app")
+      expect(JSON.parse(opts.bodyText)).toEqual({
+        useCache: true,
+        userId: "user_abc123",
+      })
+      return {
+        status: 200,
+        headers: {},
+        bodyText: JSON.stringify({
+          usage: {
+            startDate: 1770623326000,
+            endDate: 1772956800000,
+            standard: {
+              orgTotalTokensUsed: 5000000,
+              totalAllowance: 20000000,
+            },
+            premium: {
+              orgTotalTokensUsed: 0,
+              totalAllowance: 0,
+            },
+          },
+        }),
+      }
+    })
+
+    const plugin = await loadPlugin()
+    const result = plugin.probe(ctx)
+    expect(result.lines.find((line) => line.label === "Standard")).toBeTruthy()
+  })
+
+  it("retries the usage endpoint with GET when POST returns 405", async () => {
+    const ctx = makeCtx()
+    const futureExp = Math.floor(Date.now() / 1000) + 7 * 24 * 60 * 60
+    const accessToken = makeJwt({ exp: futureExp, sub: "user_abc123" })
+    ctx.host.fs.writeText("~/.factory/auth.json", JSON.stringify({
+      access_token: accessToken,
+      refresh_token: "refresh",
+    }))
+
+    let calls = 0
+    ctx.host.http.request.mockImplementation((opts) => {
+      calls += 1
+      if (calls === 1) {
+        expect(opts.method).toBe("POST")
+        expect(opts.url).toBe("https://api.factory.ai/api/organization/subscription/usage")
+        expect(JSON.parse(opts.bodyText)).toEqual({
+          useCache: true,
+          userId: "user_abc123",
+        })
+        return {
+          status: 405,
+          headers: {},
+          bodyText: "",
+        }
+      }
+
+      expect(opts.method).toBe("GET")
+      expect(opts.url).toBe(
+        "https://api.factory.ai/api/organization/subscription/usage?useCache=true&userId=user_abc123"
+      )
+      expect(opts.bodyText).toBeUndefined()
+      return {
+        status: 200,
+        headers: {},
+        bodyText: JSON.stringify({
+          usage: {
+            startDate: 1770623326000,
+            endDate: 1772956800000,
+            standard: {
+              orgTotalTokensUsed: 123,
+              totalAllowance: 20000000,
+            },
+            premium: {
+              orgTotalTokensUsed: 0,
+              totalAllowance: 0,
+            },
+          },
+        }),
+      }
+    })
+
+    const plugin = await loadPlugin()
+    const result = plugin.probe(ctx)
+    expect(calls).toBe(2)
+    expect(result.lines.find((line) => line.label === "Standard")).toBeTruthy()
   })
 
   it("shows premium line when premium allowance > 0", async () => {
@@ -985,7 +1177,7 @@ describe("factory plugin", () => {
         }),
       })
 
-      delete globalThis.__openusage_plugin
+      delete globalThis.__usage_plugin
       vi.resetModules()
       const plugin = await loadPlugin()
       const result = plugin.probe(ctx)
@@ -1061,7 +1253,7 @@ describe("factory plugin", () => {
         }
       })
 
-      delete globalThis.__openusage_plugin
+      delete globalThis.__usage_plugin
       vi.resetModules()
       const plugin = await loadPlugin()
       const result = plugin.probe(ctx)

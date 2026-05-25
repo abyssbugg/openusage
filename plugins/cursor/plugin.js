@@ -9,6 +9,7 @@
   const REFRESH_URL = BASE_URL + "/oauth/token"
   const CREDITS_URL = BASE_URL + "/aiserver.v1.DashboardService/GetCreditGrantsBalance"
   const REST_USAGE_URL = "https://cursor.com/api/usage"
+  const AUTH_USAGE_URL = BASE_URL + "/auth/usage"
   const STRIPE_URL = "https://cursor.com/api/auth/stripe"
   const CLIENT_ID = "KbZUR41cY7W6zRSdpSUJ7I7mLYBKOCmB"
   const REFRESH_BUFFER_MS = 5 * 60 * 1000 // refresh 5 minutes before expiration
@@ -248,13 +249,7 @@
     if (!userId) return null
     return { userId: userId, sessionToken: userId + "%3A%3A" + accessToken }
   }
-
-  function fetchRequestBasedUsage(ctx, accessToken) {
-    var session = buildSessionToken(ctx, accessToken)
-    if (!session) {
-      ctx.host.log.warn("request-based: cannot build session token")
-      return null
-    }
+  function fetchRequestBasedUsageWithSession(ctx, session) {
     try {
       var resp = ctx.util.request({
         method: "GET",
@@ -273,6 +268,56 @@
       ctx.host.log.warn("request-based usage fetch failed: " + String(e))
       return null
     }
+  }
+  function fetchRequestBasedUsageWithBearer(ctx, accessToken) {
+    try {
+      var resp = ctx.util.request({
+        method: "GET",
+        url: AUTH_USAGE_URL,
+        headers: {
+          Authorization: "Bearer " + accessToken,
+          Accept: "application/json",
+        },
+        timeoutMs: 10000,
+      })
+      if (resp.status < 200 || resp.status >= 300) {
+        ctx.host.log.warn("request-based bearer usage returned status=" + resp.status)
+        return null
+      }
+      return ctx.util.tryParseJson(resp.bodyText)
+    } catch (e) {
+      ctx.host.log.warn("request-based bearer usage fetch failed: " + String(e))
+      return null
+    }
+  }
+
+  function hasRequestBasedUsageData(requestUsage) {
+    if (!requestUsage || typeof requestUsage !== "object") return false
+    var gpt4 = requestUsage["gpt-4"]
+    return !!(gpt4 && typeof gpt4.maxRequestUsage === "number" && gpt4.maxRequestUsage > 0)
+  }
+
+  function fetchRequestBasedUsage(ctx, accessToken) {
+    var sessionUsage = null
+    var session = buildSessionToken(ctx, accessToken)
+    if (!session) {
+      ctx.host.log.warn("request-based: cannot build session token")
+    } else {
+      sessionUsage = fetchRequestBasedUsageWithSession(ctx, session)
+      if (hasRequestBasedUsageData(sessionUsage)) {
+        return sessionUsage
+      }
+      if (sessionUsage) {
+        ctx.host.log.info("request-based session usage incomplete, trying bearer auth endpoint")
+      }
+    }
+
+    var bearerUsage = fetchRequestBasedUsageWithBearer(ctx, accessToken)
+    if (hasRequestBasedUsageData(bearerUsage)) {
+      return bearerUsage
+    }
+
+    return sessionUsage || bearerUsage
   }
 
   function fetchStripeBalance(ctx, accessToken) {
@@ -595,7 +640,7 @@
     const isTeamAccount = (
       normalizedPlanName === "team" ||
       (su && su.limitType === "team") ||
-      (su && typeof su.pooledLimit === "number")
+      (su && typeof su.pooledLimit === "number" && su.pooledLimit > 0)
     )
 
     if (isTeamAccount) {
@@ -666,5 +711,5 @@
     return { plan: plan, lines: lines }
   }
 
-  globalThis.__openusage_plugin = { id: "cursor", probe }
+  globalThis.__usage_plugin = { id: "cursor", probe }
 })()

@@ -113,6 +113,34 @@ state.counter++
 ctx.host.fs.writeText(statePath, JSON.stringify(state, null, 2))
 ```
 
+## Property Lists (Apple plist)
+
+```typescript
+host.plist.read(path: string): string
+```
+
+Reads an Apple property list file and returns its contents as a JSON string.
+
+### Behavior
+
+- Supports both **XML** and **binary** plist files
+- `~` path expansion works the same way as `host.fs.*`
+- Throws on missing files, invalid plists, or read errors
+
+### Example
+
+```javascript
+let requestLimitInfo = null
+
+try {
+  const raw = ctx.host.plist.read("~/Library/Preferences/dev.warp.Warp-Stable.plist")
+  const parsed = ctx.util.tryParseJson(raw)
+  requestLimitInfo = parsed && parsed.AIRequestLimitInfo ? parsed.AIRequestLimitInfo : null
+} catch (e) {
+  ctx.host.log.warn("Failed to read plist: " + String(e))
+}
+```
+
 ## Crypto
 
 ```typescript
@@ -155,7 +183,7 @@ Reads an environment variable by name.
 - Returns `null` when missing
 - Variable must be whitelisted first in `src-tauri/src/plugin_engine/host_api.rs`
 - Resolution order: current process env first, then a login+interactive shell lookup (macOS)
-- Values may be cached for the app session; restart OpenUsage after changing shell config
+- Values may be cached for the app session; restart Usage after changing shell config
 
 ### Example
 

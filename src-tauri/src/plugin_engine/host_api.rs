@@ -1,9 +1,9 @@
 use aes_gcm::{
-    AesGcm, Nonce,
-    aead::{Aead, KeyInit, OsRng, generic_array::typenum::U16, rand_core::RngCore},
+    aead::{generic_array::typenum::U16, rand_core::RngCore, Aead, KeyInit, OsRng},
     aes::Aes256,
+    AesGcm, Nonce,
 };
-use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
+use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use rquickjs::{Ctx, Exception, Function, Object};
 use std::collections::HashMap;
 use std::ffi::{OsStr, OsString};
@@ -68,7 +68,7 @@ fn current_macos_keychain_account_from_user_env(user_env: Option<String>) -> Str
             }
         })
         .or_else(|| read_env_value_via_command("id", &["-un"]))
-        .unwrap_or_else(|| "openusage-user".to_string())
+        .unwrap_or_else(|| "usage-user".to_string())
 }
 
 fn current_macos_keychain_account() -> String {
@@ -120,6 +120,14 @@ fn keychain_add_generic_password_args_for_account(
         OsString::from(service),
         OsString::from("-w"),
         OsString::from(value),
+    ]
+}
+
+fn keychain_delete_generic_password_args(service: &str) -> Vec<OsString> {
+    vec![
+        OsString::from("delete-generic-password"),
+        OsString::from("-s"),
+        OsString::from(service),
     ]
 }
 
@@ -502,6 +510,7 @@ pub fn inject_host_api<'js>(
     let host = Object::new(ctx.clone())?;
     inject_log(ctx, &host, plugin_id)?;
     inject_fs(ctx, &host)?;
+    inject_plist(ctx, &host, plugin_id)?;
     inject_crypto(ctx, &host)?;
     inject_env(ctx, &host, plugin_id)?;
     inject_http(ctx, &host, plugin_id)?;
@@ -511,7 +520,7 @@ pub fn inject_host_api<'js>(
     inject_ccusage(ctx, &host, plugin_id)?;
 
     probe_ctx.set("host", host)?;
-    globals.set("__openusage_ctx", probe_ctx)?;
+    globals.set("__usage_ctx", probe_ctx)?;
 
     Ok(())
 }
@@ -610,6 +619,40 @@ fn inject_fs<'js>(ctx: &Ctx<'js>, host: &Object<'js>) -> rquickjs::Result<()> {
     )?;
 
     host.set("fs", fs_obj)?;
+    Ok(())
+}
+
+fn inject_plist<'js>(
+    ctx: &Ctx<'js>,
+    host: &Object<'js>,
+    plugin_id: &str,
+) -> rquickjs::Result<()> {
+    let plist_obj = Object::new(ctx.clone())?;
+    let pid = plugin_id.to_string();
+
+    plist_obj.set(
+        "read",
+        Function::new(
+            ctx.clone(),
+            move |ctx_inner: Ctx<'_>, path: String| -> rquickjs::Result<String> {
+                let expanded = expand_path(&path);
+                let redacted_path = redact_log_message(&expanded);
+                log::info!("[plugin:{}] plist read: path={}", pid, redacted_path);
+
+                let value = plist::Value::from_file(&expanded).map_err(|e| {
+                    Exception::throw_message(
+                        &ctx_inner,
+                        &format!("plist read failed: {}", redact_log_message(&e.to_string())),
+                    )
+                })?;
+
+                serde_json::to_string(&value)
+                    .map_err(|e| Exception::throw_message(&ctx_inner, &e.to_string()))
+            },
+        )?,
+    )?;
+
+    host.set("plist", plist_obj)?;
     Ok(())
 }
 
@@ -791,8 +834,8 @@ fn inject_http<'js>(ctx: &Ctx<'js>, host: &Object<'js>, plugin_id: &str) -> rqui
     ctx.eval::<(), _>(
         r#"
         (function() {
-            // Will be patched after __openusage_ctx is set.
-            if (typeof __openusage_ctx !== "undefined") {
+            // Will be patched after __usage_ctx is set.
+            if (typeof __usage_ctx !== "undefined") {
                 void 0;
             }
         })();
@@ -809,8 +852,8 @@ pub fn patch_http_wrapper(ctx: &rquickjs::Ctx<'_>) -> rquickjs::Result<()> {
     ctx.eval::<(), _>(
         r#"
         (function() {
-            var rawFn = __openusage_ctx.host.http._requestRaw;
-            __openusage_ctx.host.http.request = function(req) {
+            var rawFn = __usage_ctx.host.http._requestRaw;
+            __usage_ctx.host.http.request = function(req) {
                 var json = JSON.stringify({
                     url: req.url,
                     method: req.method || "GET",
@@ -828,12 +871,12 @@ pub fn patch_http_wrapper(ctx: &rquickjs::Ctx<'_>) -> rquickjs::Result<()> {
     )
 }
 
-/// Inject utility APIs (line builders, formatters, base64, jwt) onto __openusage_ctx
+/// Inject utility APIs (line builders, formatters, base64, jwt) onto __usage_ctx
 pub fn inject_utils(ctx: &rquickjs::Ctx<'_>) -> rquickjs::Result<()> {
     ctx.eval::<(), _>(
         r#"
         (function() {
-            var ctx = __openusage_ctx;
+            var ctx = __usage_ctx;
 
             // Line builders (options object API)
             ctx.line = {
@@ -1356,8 +1399,8 @@ pub fn patch_ls_wrapper(ctx: &rquickjs::Ctx<'_>) -> rquickjs::Result<()> {
     ctx.eval::<(), _>(
         r#"
         (function() {
-            var rawFn = __openusage_ctx.host.ls._discoverRaw;
-            __openusage_ctx.host.ls.discover = function(opts) {
+            var rawFn = __usage_ctx.host.ls._discoverRaw;
+            __usage_ctx.host.ls.discover = function(opts) {
                 var optsJson;
                 try { optsJson = JSON.stringify(opts); } catch (e) { return null; }
                 var json = rawFn(optsJson);
@@ -1975,8 +2018,8 @@ pub fn patch_ccusage_wrapper(ctx: &rquickjs::Ctx<'_>) -> rquickjs::Result<()> {
     ctx.eval::<(), _>(
         r#"
         (function() {
-            var rawFn = __openusage_ctx.host.ccusage._queryRaw;
-            __openusage_ctx.host.ccusage.query = function(opts) {
+            var rawFn = __usage_ctx.host.ccusage._queryRaw;
+            __usage_ctx.host.ccusage.query = function(opts) {
                 var result = rawFn(JSON.stringify(opts || {}));
                 try {
                     var parsed = JSON.parse(result);
@@ -2238,6 +2281,58 @@ fn inject_keychain<'js>(
         )?,
     )?;
 
+    let pid_delete = plugin_id.to_string();
+    keychain_obj.set(
+        "deleteGenericPassword",
+        Function::new(
+            ctx.clone(),
+            move |ctx_inner: Ctx<'_>, service: String| -> rquickjs::Result<()> {
+                if !cfg!(target_os = "macos") {
+                    return Err(Exception::throw_message(
+                        &ctx_inner,
+                        "keychain API is only supported on macOS",
+                    ));
+                }
+                log::info!(
+                    "[plugin:{}] keychain delete: service={}",
+                    pid_delete,
+                    service
+                );
+                let output = std::process::Command::new("security")
+                    .args(keychain_delete_generic_password_args(&service))
+                    .output()
+                    .map_err(|e| {
+                        Exception::throw_message(
+                            &ctx_inner,
+                            &format!("keychain delete failed: {}", e),
+                        )
+                    })?;
+
+                if !output.status.success() {
+                    let stderr = String::from_utf8_lossy(&output.stderr);
+                    let first_line = stderr.lines().next().unwrap_or("").trim();
+                    log::warn!(
+                        "[plugin:{}] keychain delete failed: service={}, error={}",
+                        pid_delete,
+                        service,
+                        first_line
+                    );
+                    return Err(Exception::throw_message(
+                        &ctx_inner,
+                        &format!("keychain delete failed: {}", first_line),
+                    ));
+                }
+
+                log::info!(
+                    "[plugin:{}] keychain delete succeeded: service={}",
+                    pid_delete,
+                    service
+                );
+                Ok(())
+            },
+        )?,
+    )?;
+
     host.set("keychain", keychain_obj)?;
     Ok(())
 }
@@ -2475,7 +2570,7 @@ mod tests {
             let app_data = std::env::temp_dir();
             inject_host_api(&ctx, "test", &app_data, "0.0.0").expect("inject host api");
             let globals = ctx.globals();
-            let probe_ctx: Object = globals.get("__openusage_ctx").expect("probe ctx");
+            let probe_ctx: Object = globals.get("__usage_ctx").expect("probe ctx");
             let host: Object = probe_ctx.get("host").expect("host");
             let crypto: Object = host.get("crypto").expect("crypto");
             let _decrypt: Function = crypto.get("decryptAes256Gcm").expect("decryptAes256Gcm");
@@ -2492,12 +2587,71 @@ mod tests {
             let app_data = std::env::temp_dir();
             inject_host_api(&ctx, "test", &app_data, "0.0.0").expect("inject host api");
             let js_expr = format!(
-                r#"__openusage_ctx.host.crypto.decryptAes256Gcm("{}", "{}")"#,
+                r#"__usage_ctx.host.crypto.decryptAes256Gcm("{}", "{}")"#,
                 envelope, key_b64
             );
             let decrypted: String = ctx.eval(js_expr).expect("js decrypt");
             assert_eq!(decrypted, expected_plaintext);
         });
+    }
+
+    #[test]
+    fn plist_api_exposes_read() {
+        let rt = Runtime::new().expect("runtime");
+        let ctx = Context::full(&rt).expect("context");
+        ctx.with(|ctx| {
+            let app_data = std::env::temp_dir();
+            inject_host_api(&ctx, "test", &app_data, "0.0.0").expect("inject host api");
+            let globals = ctx.globals();
+            let probe_ctx: Object = globals.get("__usage_ctx").expect("probe ctx");
+            let host: Object = probe_ctx.get("host").expect("host");
+            let plist: Object = host.get("plist").expect("plist");
+            let _read: Function = plist.get("read").expect("read");
+        });
+    }
+
+    #[test]
+    fn plist_api_reads_binary_plist_as_json() {
+        let path = std::env::temp_dir().join(format!(
+            "usage-plist-{}.plist",
+            uuid::Uuid::new_v4()
+        ));
+        let value = serde_json::json!({
+            "AIRequestLimitInfo": {
+                "limit": 18000,
+                "num_requests_used_since_refresh": 123,
+                "next_refresh_time": "2026-05-04T20:27:42Z",
+                "is_unlimited": false
+            },
+            "CanUseWarpCreditsWithByok": true
+        });
+        plist::to_file_binary(&path, &value).expect("write binary plist");
+
+        let rt = Runtime::new().expect("runtime");
+        let ctx = Context::full(&rt).expect("context");
+        ctx.with(|ctx| {
+            let app_data = std::env::temp_dir();
+            inject_host_api(&ctx, "test", &app_data, "0.0.0").expect("inject host api");
+            let globals = ctx.globals();
+            let probe_ctx: Object = globals.get("__usage_ctx").expect("probe ctx");
+            let host: Object = probe_ctx.get("host").expect("host");
+            let plist_obj: Object = host.get("plist").expect("plist");
+            let read: Function = plist_obj.get("read").expect("read");
+            let json_text: String = read
+                .call((path.to_string_lossy().to_string(),))
+                .expect("read plist");
+            let parsed: serde_json::Value =
+                serde_json::from_str(&json_text).expect("parse plist json");
+
+            assert_eq!(parsed["AIRequestLimitInfo"]["limit"], 18000);
+            assert_eq!(
+                parsed["AIRequestLimitInfo"]["num_requests_used_since_refresh"],
+                123
+            );
+            assert_eq!(parsed["CanUseWarpCreditsWithByok"], true);
+        });
+
+        let _ = std::fs::remove_file(&path);
     }
 
     #[test]
@@ -2508,7 +2662,7 @@ mod tests {
             let app_data = std::env::temp_dir();
             inject_host_api(&ctx, "test", &app_data, "0.0.0").expect("inject host api");
             let globals = ctx.globals();
-            let probe_ctx: Object = globals.get("__openusage_ctx").expect("probe ctx");
+            let probe_ctx: Object = globals.get("__usage_ctx").expect("probe ctx");
             let host: Object = probe_ctx.get("host").expect("host");
             let keychain: Object = host.get("keychain").expect("keychain");
             let _read: Function = keychain
@@ -2552,7 +2706,7 @@ mod tests {
             let app_data = std::env::temp_dir();
             inject_host_api(&ctx, "test", &app_data, "0.0.0").expect("inject host api");
             let globals = ctx.globals();
-            let probe_ctx: Object = globals.get("__openusage_ctx").expect("probe ctx");
+            let probe_ctx: Object = globals.get("__usage_ctx").expect("probe ctx");
             let host: Object = probe_ctx.get("host").expect("host");
             let env: Object = host.get("env").expect("env");
             let get: Function = env.get("get").expect("get");
@@ -2563,7 +2717,7 @@ mod tests {
                     get.call((name.to_string(),)).expect("get whitelisted var");
                 assert_eq!(value, expected, "{name} should match host env resolver");
 
-                let js_expr = format!(r#"__openusage_ctx.host.env.get("{}")"#, name);
+                let js_expr = format!(r#"__usage_ctx.host.env.get("{}")"#, name);
                 let js_value: Option<String> = ctx.eval(js_expr).expect("js get whitelisted var");
                 assert_eq!(
                     js_value, expected,
@@ -2572,7 +2726,7 @@ mod tests {
             }
 
             let blocked: Option<String> = get
-                .call(("__OPENUSAGE_TEST_NOT_WHITELISTED__".to_string(),))
+                .call(("__USAGE_TEST_NOT_WHITELISTED__".to_string(),))
                 .expect("get blocked var");
             assert!(
                 blocked.is_none(),
@@ -2580,7 +2734,7 @@ mod tests {
             );
 
             let js_blocked: Option<String> = ctx
-                .eval(r#"__openusage_ctx.host.env.get("__OPENUSAGE_TEST_NOT_WHITELISTED__")"#)
+                .eval(r#"__usage_ctx.host.env.get("__USAGE_TEST_NOT_WHITELISTED__")"#)
                 .expect("js get blocked var");
             assert!(
                 js_blocked.is_none(),
@@ -2620,7 +2774,7 @@ mod tests {
             let app_data = std::env::temp_dir();
             inject_host_api(&ctx, "test", &app_data, "0.0.0").expect("inject host api");
             let globals = ctx.globals();
-            let probe_ctx: Object = globals.get("__openusage_ctx").expect("probe ctx");
+            let probe_ctx: Object = globals.get("__usage_ctx").expect("probe ctx");
             let host: Object = probe_ctx.get("host").expect("host");
             let env: Object = host.get("env").expect("env");
             let get: Function = env.get("get").expect("get");
@@ -2633,7 +2787,7 @@ mod tests {
             );
 
             let js_value: Option<String> = ctx
-                .eval(r#"__openusage_ctx.host.env.get("ZAI_API_KEY")"#)
+                .eval(r#"__usage_ctx.host.env.get("ZAI_API_KEY")"#)
                 .expect("js get");
             assert_eq!(
                 js_value.as_deref(),
@@ -2646,8 +2800,8 @@ mod tests {
     #[test]
     fn current_macos_keychain_account_prefers_explicit_user_value() {
         assert_eq!(
-            current_macos_keychain_account_from_user_env(Some("openusage-test-user".to_string())),
-            "openusage-test-user"
+            current_macos_keychain_account_from_user_env(Some("usage-test-user".to_string())),
+            "usage-test-user"
         );
     }
 
@@ -2682,7 +2836,7 @@ mod tests {
     fn keychain_find_generic_password_args_for_account_include_account_and_service() {
         let args = keychain_find_generic_password_args_for_account(
             "Claude Code-credentials",
-            "openusage-test-user",
+            "usage-test-user",
         );
         let rendered: Vec<String> = args
             .into_iter()
@@ -2694,7 +2848,7 @@ mod tests {
             vec![
                 "find-generic-password",
                 "-a",
-                "openusage-test-user",
+                "usage-test-user",
                 "-s",
                 "Claude Code-credentials",
                 "-w",
@@ -2727,7 +2881,7 @@ mod tests {
     fn keychain_add_generic_password_args_for_account_include_update_account_service_and_value() {
         let args = keychain_add_generic_password_args_for_account(
             "Claude Code-credentials",
-            "openusage-test-user",
+            "usage-test-user",
             "secret-value",
         );
         let rendered: Vec<String> = args
@@ -2741,7 +2895,7 @@ mod tests {
                 "add-generic-password",
                 "-U",
                 "-a",
-                "openusage-test-user",
+                "usage-test-user",
                 "-s",
                 "Claude Code-credentials",
                 "-w",
@@ -3199,7 +3353,7 @@ mod tests {
 
     #[test]
     fn ccusage_path_entries_with_home_and_existing_path_preserves_order() {
-        let home = std::path::PathBuf::from("/tmp/openusage-home");
+        let home = std::path::PathBuf::from("/tmp/usage-home");
         let existing = std::env::join_paths([
             std::path::PathBuf::from("/usr/bin"),
             std::path::PathBuf::from("/bin"),
@@ -3258,7 +3412,7 @@ mod tests {
 
     #[test]
     fn ccusage_enriched_path_with_preserves_entries_after_join_and_split() {
-        let home = std::path::PathBuf::from("/tmp/openusage-home");
+        let home = std::path::PathBuf::from("/tmp/usage-home");
         let existing = std::env::join_paths([
             std::path::PathBuf::from("/usr/bin"),
             std::path::PathBuf::from("/bin"),

@@ -32,20 +32,36 @@
   }
 
   function parseMoney(s) {
-    return Number(s.replace(/,/g, ""))
+    return Number(String(s).replace(/,/g, ""))
   }
 
-  function parseBalanceText(text) {
-    if (!text || typeof text !== "string") return null
+  function parseSignedMoney(s) {
+    return Number(String(s).replace(/\$/g, "").replace(/,/g, ""))
+  }
 
-    var result = {
+  function formatMoney(amount) {
+    var abs = Math.abs(amount)
+    return (amount < 0 ? "-$" : "$") + abs.toFixed(2)
+  }
+
+  function makeEmptyBalance() {
+    return {
       remaining: null,
       total: null,
       hourlyRate: 0,
       bonusPct: null,
       bonusDays: null,
       credits: null,
+      workspaces: [],
+      ampFreeDisabled: false,
     }
+  }
+
+  function parseBalanceText(text) {
+    if (!text || typeof text !== "string") return null
+
+    var result = makeEmptyBalance()
+    result.ampFreeDisabled = /Amp Free:\s*disabled\b/i.test(text)
 
     var balanceMatch = text.match(/\$([0-9][0-9,]*(?:\.[0-9]+)?)\/\$([0-9][0-9,]*(?:\.[0-9]+)?) remaining/)
     if (balanceMatch) {
@@ -79,7 +95,20 @@
       if (Number.isFinite(credits)) result.credits = credits
     }
 
-    if (result.total === null && result.credits === null) return null
+    var workspaceRe = /^Workspace\s+(.+?):\s+(-?\$[0-9][0-9,]*(?:\.[0-9]+)?) remaining(?:\b|$)/gm
+    var workspaceMatch
+    while ((workspaceMatch = workspaceRe.exec(text))) {
+      var workspaceRemaining = parseSignedMoney(workspaceMatch[2])
+      if (!Number.isFinite(workspaceRemaining)) continue
+      result.workspaces.push({
+        name: workspaceMatch[1].trim(),
+        remaining: workspaceRemaining,
+      })
+    }
+
+    if (result.total === null && result.credits === null && result.workspaces.length === 0 && !result.ampFreeDisabled) {
+      return null
+    }
 
     return result
   }
@@ -119,20 +148,23 @@
       throw "Could not parse usage data."
     }
 
-    var balance = parseBalanceText(json.result.displayText)
+    var displayText = json.result.displayText
+    var balance = parseBalanceText(displayText)
     if (!balance) {
-      if (/Amp Free/.test(json.result.displayText)) {
-        ctx.host.log.error("failed to parse display text: " + json.result.displayText)
+      if (/Amp Free/.test(displayText) && !/Amp Free:\s*disabled\b/i.test(displayText)) {
+        ctx.host.log.error("failed to parse display text: " + displayText)
         throw "Could not parse usage data."
       }
-      ctx.host.log.warn("no balance data found, assuming credits-only: " + json.result.displayText)
-      balance = { remaining: null, total: null, hourlyRate: 0, bonusPct: null, bonusDays: null, credits: 0 }
+      ctx.host.log.warn("no balance data found, assuming credits-only: " + displayText)
+      balance = makeEmptyBalance()
+      balance.credits = 0
     }
 
     var lines = []
-    var plan = "Free"
+    var plan = null
 
     if (balance.total !== null) {
+      plan = "Free"
       var used = Math.max(0, balance.total - balance.remaining)
       var total = balance.total
 
@@ -159,17 +191,37 @@
       }
     }
 
-    if (balance.credits !== null && balance.total === null) plan = "Credits"
+    if (balance.workspaces.length > 0 && plan === null) {
+      plan = "Workspace"
+      for (var i = 0; i < balance.workspaces.length; i++) {
+        var workspace = balance.workspaces[i]
+        lines.push(ctx.line.text({
+          label: "Workspace " + workspace.name,
+          value: formatMoney(workspace.remaining),
+        }))
+      }
+    }
 
-    if (balance.credits !== null && (balance.credits > 0 || balance.total === null)) {
+    if (balance.credits !== null && balance.total === null && balance.workspaces.length === 0) {
+      plan = "Credits"
+    }
+
+    if (balance.credits !== null && (balance.credits > 0 || (balance.total === null && balance.workspaces.length === 0))) {
       lines.push(ctx.line.text({
         label: "Credits",
         value: "$" + balance.credits.toFixed(2),
       }))
     }
 
+    if (lines.length === 0 && balance.ampFreeDisabled) {
+      lines.push(ctx.line.text({
+        label: "Amp Free",
+        value: "Disabled",
+      }))
+    }
+
     return { plan: plan, lines: lines }
   }
 
-  globalThis.__openusage_plugin = { id: "amp", probe: probe }
+  globalThis.__usage_plugin = { id: "amp", probe: probe }
 })()

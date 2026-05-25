@@ -5,6 +5,7 @@
   const KEYCHAIN_SERVICES = ["Factory Token", "Factory token", "Factory Auth", "Droid Auth"]
   const WORKOS_CLIENT_ID = "client_01HNM792M5G5G1A2THWPXKFMXB"
   const WORKOS_AUTH_URL = "https://api.workos.com/user_management/authenticate"
+  const APP_URL = "https://app.factory.ai"
   const USAGE_URL = "https://api.factory.ai/api/organization/subscription/usage"
   const TOKEN_REFRESH_THRESHOLD_MS = 24 * 60 * 60 * 1000 // 24 hours before expiry
 
@@ -255,6 +256,67 @@
     return typeof expiresAtMs === "number" && nowMs < expiresAtMs
   }
 
+  function getUserIdFromAccessToken(ctx, accessToken) {
+    const payload = ctx.jwt.decodePayload(accessToken)
+    if (!payload || typeof payload !== "object") return null
+    const rawUserId = payload.sub || payload.user_id || payload.userId
+    if (typeof rawUserId !== "string") return null
+    const userId = rawUserId.trim()
+    return userId || null
+  }
+
+  function buildUsageHeaders(accessToken) {
+    return {
+      Authorization: "Bearer " + accessToken,
+      "Content-Type": "application/json",
+      Accept: "application/json",
+      "User-Agent": "Usage",
+      Origin: APP_URL,
+      Referer: APP_URL + "/",
+      "x-factory-client": "web-app",
+    }
+  }
+
+  function buildUsagePayload(ctx, accessToken) {
+    const userId = getUserIdFromAccessToken(ctx, accessToken)
+    const body = { useCache: true }
+    if (userId) body.userId = userId
+    return body
+  }
+
+  function buildUsageGetUrl(body) {
+    const params = ["useCache=" + encodeURIComponent(String(body.useCache))]
+    if (typeof body.userId === "string" && body.userId) {
+      params.push("userId=" + encodeURIComponent(body.userId))
+    }
+    return USAGE_URL + "?" + params.join("&")
+  }
+
+  function requestUsage(ctx, accessToken, method, body) {
+    const req = {
+      method: method,
+      url: method === "GET" ? buildUsageGetUrl(body) : USAGE_URL,
+      headers: buildUsageHeaders(accessToken),
+      timeoutMs: 10000,
+    }
+    if (method !== "GET") {
+      req.bodyText = JSON.stringify(body)
+    }
+    return ctx.util.request(req)
+  }
+
+  function extractErrorDetail(ctx, bodyText) {
+    const body = ctx.util.tryParseJson(bodyText)
+    if (!body || typeof body !== "object") return null
+    if (typeof body.detail === "string" && body.detail.trim()) return body.detail.trim()
+    if (typeof body.message === "string" && body.message.trim()) return body.message.trim()
+    if (typeof body.error === "string" && body.error.trim()) return body.error.trim()
+    if (body.error && typeof body.error.message === "string" && body.error.message.trim()) {
+      return body.error.message.trim()
+    }
+    return null
+  }
+
   function refreshToken(ctx, authState) {
     const auth = authState.auth
     if (!auth.refresh_token) {
@@ -314,18 +376,227 @@
   }
 
   function fetchUsage(ctx, accessToken) {
-    return ctx.util.request({
-      method: "POST",
-      url: USAGE_URL,
-      headers: {
-        Authorization: "Bearer " + accessToken,
-        "Content-Type": "application/json",
-        Accept: "application/json",
-        "User-Agent": "OpenUsage",
-      },
-      bodyText: JSON.stringify({ useCache: true }),
-      timeoutMs: 10000,
-    })
+    const body = buildUsagePayload(ctx, accessToken)
+    const postResp = requestUsage(ctx, accessToken, "POST", body)
+    if (postResp.status === 405) {
+      ctx.host.log.warn("usage POST returned 405, retrying with GET")
+      return requestUsage(ctx, accessToken, "GET", body)
+    }
+    return postResp
+  }
+
+  function isObject(value) {
+    return value !== null && typeof value === "object" && !Array.isArray(value)
+  }
+
+  function asNumber(value) {
+    if (typeof value === "number" && Number.isFinite(value)) return value
+    if (typeof value === "string") {
+      const trimmed = value.trim().replace(/%$/, "")
+      if (!trimmed) return null
+      const parsed = Number(trimmed)
+      return Number.isFinite(parsed) ? parsed : null
+    }
+    return null
+  }
+
+  function firstValue(source, keys) {
+    if (!isObject(source)) return undefined
+    for (const key of keys) {
+      if (source[key] !== undefined && source[key] !== null) return source[key]
+    }
+    return undefined
+  }
+
+  function firstNumber(source, keys) {
+    return asNumber(firstValue(source, keys))
+  }
+
+  function firstObject() {
+    for (let i = 0; i < arguments.length; i += 1) {
+      if (isObject(arguments[i])) return arguments[i]
+    }
+    return null
+  }
+
+  function normalizePercent(value, ratioHint) {
+    const n = asNumber(value)
+    if (n === null) return null
+    if (ratioHint || (n > 0 && n < 1)) return n * 100
+    return n
+  }
+
+  function percentFromMetric(metric) {
+    if (!isObject(metric)) return null
+
+    const ratioValue = firstValue(metric, ["usedRatio", "usageRatio", "ratio"])
+    if (ratioValue !== undefined) return normalizePercent(ratioValue, true)
+
+    const percentValue = firstValue(metric, [
+      "usedPercent",
+      "percentUsed",
+      "usagePercent",
+      "percentage",
+      "percent",
+    ])
+    if (percentValue !== undefined) return normalizePercent(percentValue, false)
+
+    const used = firstNumber(metric, ["used", "value", "current", "usedAmount"])
+    const limit = firstNumber(metric, ["limit", "allowance", "total", "totalAllowance"])
+    if (used !== null && limit !== null && limit > 0) {
+      return (used / limit) * 100
+    }
+
+    return null
+  }
+
+  function metricEndValue(metric, fallbackEnd) {
+    const value = firstValue(metric, ["resetsAt", "resetAt", "endDate", "endAt", "periodEnd", "periodEndDate"])
+    return value === undefined ? fallbackEnd : value
+  }
+
+  function metricStartValue(metric, fallbackStart) {
+    const value = firstValue(metric, ["startDate", "startAt", "periodStart", "periodStartDate"])
+    return value === undefined ? fallbackStart : value
+  }
+
+  function metricResetsAt(ctx, metric, fallbackEnd) {
+    const value = metricEndValue(metric, fallbackEnd)
+    return value === undefined || value === null ? null : ctx.util.toIso(value)
+  }
+
+  function metricPeriodDurationMs(metric, fallbackStart, fallbackEnd) {
+    const explicit = firstNumber(metric, ["periodDurationMs", "durationMs", "periodMs"])
+    if (explicit !== null && explicit > 0) return explicit
+
+    const start = asNumber(metricStartValue(metric, fallbackStart))
+    const end = asNumber(metricEndValue(metric, fallbackEnd))
+    if (start !== null && end !== null && end > start) return end - start
+    return null
+  }
+
+  function addPercentUsageLine(ctx, lines, label, metric, fallbackStart, fallbackEnd) {
+    const used = percentFromMetric(metric)
+    if (used === null) return false
+
+    lines.push(ctx.line.progress({
+      label,
+      used: Math.round(used * 100) / 100,
+      limit: 100,
+      format: { kind: "percent" },
+      resetsAt: metricResetsAt(ctx, metric, fallbackEnd),
+      periodDurationMs: metricPeriodDurationMs(metric, fallbackStart, fallbackEnd),
+    }))
+    return true
+  }
+
+  function addExtraUsageLine(ctx, lines, usage) {
+    const extraUsage = firstObject(
+      usage.extraUsage,
+      usage.extra_usage,
+      usage.extraUsageBalance,
+      usage.extra,
+      usage.overage,
+    )
+    if (!extraUsage) return false
+
+    let remaining = firstNumber(extraUsage, [
+      "remainingUsd",
+      "remainingUSD",
+      "remainingDollars",
+      "balanceUsd",
+      "balanceUSD",
+      "balance",
+      "amountRemainingUsd",
+    ])
+    const remainingCents = firstNumber(extraUsage, ["remainingCents", "balanceCents", "amountRemainingCents"])
+    if (remaining === null && remainingCents !== null) remaining = remainingCents / 100
+    if (remaining === null) return false
+
+    lines.push(ctx.line.text({
+      label: "Extra Usage",
+      value: "$" + remaining.toFixed(2) + " remaining",
+    }))
+    return true
+  }
+
+  function droidCoreConfig(usage) {
+    return firstObject(
+      usage.droidCore,
+      usage.droid_core,
+      usage.models && usage.models.droidCore,
+      usage.modelConfiguration && usage.modelConfiguration.droidCore,
+    )
+  }
+
+  function isDroidCoreEnabled(usage) {
+    const droidCore = droidCoreConfig(usage)
+    return Boolean(droidCore && (
+      droidCore.enabled === true ||
+      droidCore.available === true ||
+      droidCore.included === true
+    ))
+  }
+
+  function addDroidCoreLine(ctx, lines, usage) {
+    if (!isDroidCoreEnabled(usage)) return false
+
+    lines.push(ctx.line.badge({
+      label: "Droid Core",
+      text: "Enabled",
+      color: "#f97316",
+    }))
+    return true
+  }
+
+  function addManagedComputersLine(ctx, lines, usage, fallbackStart, fallbackEnd) {
+    const managed = firstObject(
+      usage.managedComputers,
+      usage.managedComputerUsage,
+      usage.computers,
+      usage.compute,
+      usage.managedCompute,
+    )
+    if (!managed) return false
+
+    const managedUsed = firstNumber(managed, ["usedHours", "usageHours", "hoursUsed", "used", "current"])
+    const used = managedUsed === null ? 0 : managedUsed
+    const limit = firstNumber(managed, ["includedHours", "limitHours", "allowanceHours", "totalHours", "limit"])
+    if (limit === null || limit <= 0) return false
+
+    lines.push(ctx.line.progress({
+      label: "Managed Computers",
+      used,
+      limit,
+      format: { kind: "count", suffix: "h" },
+      resetsAt: metricResetsAt(ctx, managed, fallbackEnd),
+      periodDurationMs: metricPeriodDurationMs(managed, fallbackStart, fallbackEnd),
+    }))
+    return true
+  }
+
+  function inferPlan(ctx, usage, standard) {
+    const rawPlan = firstValue(usage, ["plan", "planName", "tier", "usageMode", "currentUsageMode"])
+    let plan = typeof rawPlan === "string" && rawPlan.trim()
+      ? ctx.fmt.planLabel(rawPlan.trim())
+      : null
+
+    if (!plan && standard && typeof standard.totalAllowance === "number") {
+      const allowance = standard.totalAllowance
+      if (allowance >= 200000000) {
+        plan = "Max"
+      } else if (allowance >= 20000000) {
+        plan = "Pro"
+      } else if (allowance > 0) {
+        plan = "Basic"
+      }
+    }
+
+    if (isDroidCoreEnabled(usage)) {
+      return plan ? plan + " + Droid Core" : "Droid Core"
+    }
+
+    return plan
   }
 
   function probe(ctx) {
@@ -393,6 +664,11 @@
     }
 
     if (resp.status < 200 || resp.status >= 300) {
+      const detail = extractErrorDetail(ctx, resp.bodyText)
+      if (detail) {
+        ctx.host.log.error("usage returned error: status=" + resp.status + " detail=" + detail)
+        throw detail
+      }
       ctx.host.log.error("usage returned error: status=" + resp.status)
       throw "Usage request failed (HTTP " + String(resp.status) + "). Try again later."
     }
@@ -418,6 +694,37 @@
     const periodDurationMs = (typeof endDate === "number" && typeof startDate === "number")
       ? (endDate - startDate)
       : null
+
+    addExtraUsageLine(ctx, lines, usage)
+
+    const standardUsage = firstObject(
+      usage.standardUsage,
+      usage.standardLimits,
+      usage.usageLimits,
+      usage.limits,
+    )
+    if (standardUsage) {
+      addPercentUsageLine(ctx, lines, "5-hour usage", firstObject(
+        standardUsage.fiveHour,
+        standardUsage.fiveHourUsage,
+        standardUsage.five_hour,
+        standardUsage["5Hour"],
+        standardUsage["5-hour"],
+      ), startDate, endDate)
+      addPercentUsageLine(ctx, lines, "Weekly usage", firstObject(
+        standardUsage.weekly,
+        standardUsage.weeklyUsage,
+        standardUsage.week,
+      ), startDate, endDate)
+      addPercentUsageLine(ctx, lines, "Monthly usage", firstObject(
+        standardUsage.monthly,
+        standardUsage.monthlyUsage,
+        standardUsage.month,
+      ), startDate, endDate)
+    }
+
+    addDroidCoreLine(ctx, lines, usage)
+    addManagedComputersLine(ctx, lines, usage, startDate, endDate)
 
     // Standard tokens (primary line)
     const standard = usage.standard
@@ -449,18 +756,7 @@
       }))
     }
 
-    // Infer plan from allowance
-    let plan = null
-    if (standard && typeof standard.totalAllowance === "number") {
-      const allowance = standard.totalAllowance
-      if (allowance >= 200000000) {
-        plan = "Max"
-      } else if (allowance >= 20000000) {
-        plan = "Pro"
-      } else if (allowance > 0) {
-        plan = "Basic"
-      }
-    }
+    const plan = inferPlan(ctx, usage, standard)
 
     if (lines.length === 0) {
       lines.push(ctx.line.badge({ label: "Status", text: "No usage data", color: "#a3a3a3" }))
@@ -469,5 +765,5 @@
     return { plan: plan, lines: lines }
   }
 
-  globalThis.__openusage_plugin = { id: "factory", probe }
+  globalThis.__usage_plugin = { id: "factory", probe }
 })()

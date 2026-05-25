@@ -1,0 +1,32 @@
+{
+  "schemaVersion": 1,
+  "id": "rovo-dev",
+  "name": "Rovo Dev",
+  "version": "0.0.1",
+  "entry": "plugin.js",
+  "icon": "icon.svg",
+  "brandColor": "#0052CC",
+  "links": [
+    {
+      "label": "Usage docs",
+      "url": "https://support.atlassian.com/rovo/docs/view-your-rovo-dev-credit-usage/"
+    },
+    {
+      "label": "CLI docs",
+      "url": "https://support.atlassian.com/rovo/docs/rovo-dev-cli-commands/"
+    }
+  ],
+  "lines": [
+    {
+      "type": "progress",
+      "label": "Monthly credits",
+      "scope": "overview",
+      "primaryOrder": 1
+    },
+    {
+      "type": "text",
+      "label": "Remaining",
+      "scope": "overview"
+    }
+  ]
+}

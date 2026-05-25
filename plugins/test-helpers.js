@@ -9,8 +9,8 @@ export const makeCtx = () => {
     app: {
       version: "0.0.0",
       platform: "darwin",
-      appDataDir: "/tmp/openusage-test",
-      pluginDataDir: "/tmp/openusage-test/plugin",
+      appDataDir: "/tmp/usage-test",
+      pluginDataDir: "/tmp/usage-test/plugin",
     },
     host: {
       fs: {
@@ -37,6 +37,9 @@ export const makeCtx = () => {
           }
           return Array.from(out).sort()
         },
+      },
+      plist: {
+        read: vi.fn((path) => files.get(path)),
       },
       env: {
         get: vi.fn(() => null),

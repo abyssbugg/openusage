@@ -3053,40 +3053,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "openusage"
-version = "0.6.15"
-dependencies = [
- "aes-gcm",
- "base64 0.22.1",
- "dirs 6.0.0",
- "log",
- "objc2",
- "objc2-app-kit",
- "objc2-foundation",
- "objc2-web-kit",
- "regex-lite",
- "reqwest 0.13.2",
- "rquickjs",
- "serde",
- "serde_json",
- "serial_test",
- "tauri",
- "tauri-build",
- "tauri-nspanel",
- "tauri-plugin-aptabase",
- "tauri-plugin-autostart",
- "tauri-plugin-global-shortcut",
- "tauri-plugin-log",
- "tauri-plugin-opener",
- "tauri-plugin-process",
- "tauri-plugin-store",
- "tauri-plugin-updater",
- "time",
- "tokio",
- "uuid",
-]
-
-[[package]]
 name = "option-ext"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5781,6 +5747,41 @@ dependencies = [
  "serde",
  "unic-ucd-ident",
  "url",
+]
+
+[[package]]
+name = "usage-meter"
+version = "0.6.15"
+dependencies = [
+ "aes-gcm",
+ "base64 0.22.1",
+ "dirs 6.0.0",
+ "log",
+ "objc2",
+ "objc2-app-kit",
+ "objc2-foundation",
+ "objc2-web-kit",
+ "plist",
+ "regex-lite",
+ "reqwest 0.13.2",
+ "rquickjs",
+ "serde",
+ "serde_json",
+ "serial_test",
+ "tauri",
+ "tauri-build",
+ "tauri-nspanel",
+ "tauri-plugin-aptabase",
+ "tauri-plugin-autostart",
+ "tauri-plugin-global-shortcut",
+ "tauri-plugin-log",
+ "tauri-plugin-opener",
+ "tauri-plugin-process",
+ "tauri-plugin-store",
+ "tauri-plugin-updater",
+ "time",
+ "tokio",
+ "uuid",
 ]
 
 [[package]]

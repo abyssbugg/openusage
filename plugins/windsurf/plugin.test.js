@@ -5,7 +5,7 @@ const CLOUD_COMPAT_VERSION = "1.108.2"
 
 const loadPlugin = async () => {
   await import("./plugin.js")
-  return globalThis.__openusage_plugin
+  return globalThis.__usage_plugin
 }
 
 function makeAuthStatus(apiKey = "sk-ws-01-test") {
@@ -72,7 +72,7 @@ function setupCloudMock(ctx, { stableAuth, nextAuth, stableResponse, nextRespons
 
 describe("windsurf plugin", () => {
   beforeEach(() => {
-    delete globalThis.__openusage_plugin
+    delete globalThis.__usage_plugin
     vi.resetModules()
   })
 

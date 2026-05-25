@@ -7,7 +7,7 @@ const API_URL = "https://ampcode.com/api/internal"
 
 const loadPlugin = async () => {
   await import("./plugin.js")
-  return globalThis.__openusage_plugin
+  return globalThis.__usage_plugin
 }
 
 function writeSecrets(ctx, apiKey) {
@@ -41,9 +41,19 @@ function standardDisplayText(opts) {
   return text
 }
 
+function workspaceDisplayText(opts) {
+  opts = opts || {}
+  var workspaceName = opts.workspaceName || "weanime"
+  var workspaceRemaining = opts.workspaceRemaining || "-$34.08"
+  var text = "Signed in as user@test.com (testuser)\n"
+  text += "Amp Free: disabled - enable for $10 daily of free usage: https://ampcode.com/settings#amp-free\n"
+  text += "Workspace " + workspaceName + ": " + workspaceRemaining + " remaining - https://ampcode.com/workspaces/" + workspaceName
+  return text
+}
+
 describe("amp plugin", () => {
   beforeEach(() => {
-    delete globalThis.__openusage_plugin
+    delete globalThis.__usage_plugin
     vi.resetModules()
   })
 
@@ -375,5 +385,31 @@ describe("amp plugin", () => {
     var result = plugin.probe(ctx)
     expect(result.lines[0].limit).toBe(2000)
     expect(result.lines[0].used).toBeCloseTo(999.50, 2)
+  })
+
+  it("parses workspace balances when amp free is disabled", async () => {
+    var ctx = makeCtx()
+    writeSecrets(ctx)
+    ctx.host.http.request.mockReturnValue(balanceResponse(workspaceDisplayText()))
+    var plugin = await loadPlugin()
+    var result = plugin.probe(ctx)
+    expect(result.plan).toBe("Workspace")
+    expect(result.lines.length).toBe(1)
+    expect(result.lines[0].label).toBe("Workspace weanime")
+    expect(result.lines[0].value).toBe("-$34.08")
+  })
+
+  it("shows amp free disabled instead of failing when no balances are present", async () => {
+    var ctx = makeCtx()
+    writeSecrets(ctx)
+    var text = "Signed in as user@test.com (testuser)\n"
+      + "Amp Free: disabled - enable for $10 daily of free usage: https://ampcode.com/settings#amp-free"
+    ctx.host.http.request.mockReturnValue(balanceResponse(text))
+    var plugin = await loadPlugin()
+    var result = plugin.probe(ctx)
+    expect(result.plan).toBeNull()
+    expect(result.lines.length).toBe(1)
+    expect(result.lines[0].label).toBe("Amp Free")
+    expect(result.lines[0].value).toBe("Disabled")
   })
 })

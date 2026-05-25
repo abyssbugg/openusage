@@ -1,102 +1,103 @@
-# Track all your AI coding subscriptions in one place
+# Usage
+Menu bar app for tracking AI subscription usage across providers.
 
-See your usage at a glance from your menu bar. No digging through dashboards.
+Usage shows provider limits, usage, remaining quota, reset times, and a local HTTP API from one lightweight macOS app.
 
-![OpenUsage Screenshot](screenshot.png)
+![Usage screenshot](screenshot.png)
 
 ## Download
+[Download the latest release](https://github.com/datamatics/usage-meter/releases/latest) for macOS.
 
-[**Download the latest release**](https://github.com/robinebers/openusage/releases/latest) (macOS, Apple Silicon & Intel)
+The app can auto-update from GitHub releases after it is installed. Local source changes still require a new build and reinstall.
 
-The app auto-updates. Install once and you're set.
-
-## What It Does
-
-OpenUsage lives in your menu bar and shows you how much of your AI coding subscriptions you've used. Progress bars, badges, and clear labels. No mental math required.
-
-- **One glance.** All your AI tools, one panel.
-- **Always up-to-date.** Refreshes automatically on a schedule you pick.
-- **Global shortcut.** Toggle the panel from anywhere with a customizable keyboard shortcut.
-- **Lightweight.** Opens instantly, stays out of your way.
-- **Plugin-based.** New providers get added without updating the whole app.
-- **[Local HTTP API](docs/local-http-api.md).** Other apps can read your usage data from `127.0.0.1:6736`.
-- **[Proxy support](docs/proxy.md).** Route provider HTTP requests through a SOCKS5 or HTTP proxy.
+## Features
+- Menu bar usage overview
+- Provider detail pages
+- Used and remaining quota shown together
+- Auto refresh with configurable interval
+- Global shortcut
+- Start on login
+- Light and dark themes
+- Local HTTP API on `127.0.0.1:6736`
+- Bundled provider plugins
+- Optional provider HTTP proxy support
 
 ## Supported Providers
+- [Amp](docs/providers/amp.md) / free tier, bonus, credits
+- [Antigravity](docs/providers/antigravity.md) / all models
+- [Claude](docs/providers/claude.md) / session, weekly, peak/off-peak, extra usage, local token usage
+- [Codex](docs/providers/codex.md) / session, weekly, reviews, credits
+- [Copilot](docs/providers/copilot.md) / premium, chat, completions
+- [Cursor](docs/providers/cursor.md) / credits, total usage, auto usage, API usage, on-demand, CLI auth
+- [Factory / Droid](docs/providers/factory.md) / extra usage, 5h/weekly/monthly limits, Droid Core, managed computers, legacy tokens
+- [Gemini](docs/providers/gemini.md) / pro, flash, workspace/free/paid tier
+- [JetBrains AI Assistant](docs/providers/jetbrains-ai-assistant.md) / quota, remaining
+- [Kiro](docs/providers/kiro.md) / credits, bonus credits, overages
+- [Kimi Code](docs/providers/kimi.md) / session, weekly
+- [MiniMax](docs/providers/minimax.md) / coding plan session
+- [OpenCode Go](docs/providers/opencode-go.md) / 5h, weekly, monthly spend limits
+- [Perplexity](docs/providers/perplexity.md) / account limits from the desktop app
+- [Rovo Dev](docs/providers/rovo-dev.md) / monthly credits
+- [Warp](docs/providers/warp.md) / requests
+- [Windsurf](docs/providers/windsurf.md) / prompt credits, flex credits
+- [Z.ai](docs/providers/zai.md) / session, weekly, web searches
 
-- [**Amp**](docs/providers/amp.md) / free tier, bonus, credits
-- [**Antigravity**](docs/providers/antigravity.md) / all models
-- [**Claude**](docs/providers/claude.md) / session, weekly, peak/off-peak, extra usage, local token usage (ccusage)
-- [**Codex**](docs/providers/codex.md) / session, weekly, reviews, credits
-- [**Copilot**](docs/providers/copilot.md) / premium, chat, completions
-- [**Cursor**](docs/providers/cursor.md) / credits, total usage, auto usage, API usage, on-demand, CLI auth
-- [**Factory / Droid**](docs/providers/factory.md) / standard, premium tokens
-- [**Gemini**](docs/providers/gemini.md) / pro, flash, workspace/free/paid tier
-- [**JetBrains AI Assistant**](docs/providers/jetbrains-ai-assistant.md) / quota, remaining
-- [**Kiro**](docs/providers/kiro.md) / credits, bonus credits, overages
-- [**Kimi Code**](docs/providers/kimi.md) / session, weekly
-- [**MiniMax**](docs/providers/minimax.md) / coding plan session
-- [**OpenCode Go**](docs/providers/opencode-go.md) / 5h, weekly, monthly spend limits
-- [**Windsurf**](docs/providers/windsurf.md) / prompt credits, flex credits
-- [**Z.ai**](docs/providers/zai.md) / session, weekly, web searches
+Request a provider or report an issue at https://github.com/datamatics/usage-meter/issues.
 
-Community contributions welcome.
+## Local HTTP API
+Usage exposes read-only usage data at `http://127.0.0.1:6736`.
 
-Want a provider that's not listed? [Open an issue.](https://github.com/robinebers/openusage/issues/new)
+See [docs/local-http-api.md](docs/local-http-api.md).
 
-## Open Source, Community Driven
+## Proxy Support
+Provider HTTP requests can be routed through a SOCKS5 or HTTP proxy.
 
-OpenUsage is built by its users. Hundreds of people use it daily, and the project grows through community contributions: new providers, bug fixes, and ideas.
+See [docs/proxy.md](docs/proxy.md).
 
-I maintain the project as a guide and quality gatekeeper, but this is your app as much as mine. If something is missing or broken, the best way to get it fixed is to contribute by opening an issue, or submitting a PR.
+## Development
+Requirements:
+- macOS
+- Bun
+- Rust
+- Tauri prerequisites
 
-Plugins are currently bundled as we build our the API, but soon will be made flexible so you can build and load their own.
+Install dependencies:
 
-<a href="https://www.star-history.com/?repos=robinebers%2Fopenusage&type=date&legend=top-left">
- <picture>
-   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=robinebers/openusage&type=date&theme=dark&legend=top-left" />
-   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=robinebers/openusage&type=date&legend=top-left" />
-   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=robinebers/openusage&type=date&legend=top-left" />
- </picture>
-</a>
+    bun install
 
-### How to Contribute
+Run tests:
 
-- **Add a provider.** Each one is just a plugin. See the [Plugin API](docs/plugins/api.md).
-- **Fix a bug.** PRs welcome. Provide before/after screenshots.
-- **Request a feature.** [Open an issue](https://github.com/robinebers/openusage/issues/new) and make your case.
+    bun run test --run
 
-Keep it simple. No feature creep, no AI-generated commit messages, test your changes.
+Build the web app:
 
-## Built Entirely with AI
+    bun run build
 
-Not a single line of code in this project was read or written by hand. 100% AI-generated, AI-reviewed, AI-shipped — using [Cursor](https://cursor.com), [Claude Code](https://docs.anthropic.com/en/docs/claude-code), and [Codex CLI](https://github.com/openai/codex).
+Build the macOS app:
 
-OpenUsage is a real-world example of what I teach in the [AI Builder's Blueprint](https://itsbyrob.in/EBDqgJ6) — a proven process for building and shipping software with AI, no coding background required.
+    bun run tauri build
 
-## Sponsors
+Bundle plugins after plugin changes:
 
-OpenUsage is supported by our sponsors. Become a sponsor to get your logo here and on [openusage.ai](https://openusage.ai).
+    bun run bundle:plugins
 
-[Become a Sponsor](https://github.com/sponsors/robinebers)
+## Project Structure
+- `src/` frontend app
+- `src-tauri/` Tauri/Rust host
+- `plugins/` bundled provider plugins
+- `docs/providers/` provider documentation
+- `docs/plugins/` plugin API documentation
+- `.github/` GitHub templates and workflows
 
-<!-- Add sponsor logos here -->
+## Contributing
+- Keep changes small.
+- Add tests for bugs and plugin changes.
+- Update provider docs when behavior changes.
+- Do not commit generated build outputs.
+- Use provider brand colors and `currentColor` SVG icons for plugins.
 
 ## Credits
-
-Inspired by [CodexBar](https://github.com/steipete/CodexBar) by [@steipete](https://github.com/steipete). Same idea, very different approach.
+Inspired by [CodexBar](https://github.com/steipete/CodexBar).
 
 ## License
-
 [MIT](LICENSE)
-
----
-
-<details>
-<summary><strong>Build from source</strong></summary>
-
-> **Warning**: The `main` branch may not be stable. It is merged directly without staging, so users are advised to use tagged versions for stable builds. Tagged versions are fully tested while `main` may contain unreleased features.
-
-### Stack
-
-...

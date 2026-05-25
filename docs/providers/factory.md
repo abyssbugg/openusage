@@ -8,7 +8,8 @@
 - **Base URL:** `https://api.factory.ai`
 - **Auth provider:** WorkOS (`api.workos.com`)
 - **Client ID:** `client_01HNM792M5G5G1A2THWPXKFMXB`
-- **Token counts:** integers (raw token counts)
+- **Usage limits:** percentages for current Factory UI limits
+- **Token counts:** integers (raw token counts, legacy response)
 - **Timestamps:** unix milliseconds
 - **Billing period:** ~27 days (monthly)
 
@@ -16,7 +17,7 @@
 
 ### POST /api/organization/subscription/usage
 
-Returns token usage for the current billing period.
+Returns Factory subscription usage. Current responses expose UI-style limits; older responses expose raw token allowances.
 
 #### Headers
 
@@ -35,6 +36,46 @@ Returns token usage for the current billing period.
 ```
 
 #### Response
+Current UI-style response shape:
+
+```jsonc
+{
+  "usage": {
+    "plan": "Standard",
+    "extraUsage": {
+      "remainingUsd": 0
+    },
+    "standardUsage": {
+      "fiveHour": {
+        "usedPercent": 2,
+        "startDate": 1770623326000,
+        "endDate": 1770641326000
+      },
+      "weekly": {
+        "usedRatio": 0.01,
+        "startDate": 1770623326000,
+        "endDate": 1771228126000
+      },
+      "monthly": {
+        "usedPercent": 1,
+        "startDate": 1770623326000,
+        "endDate": 1773128926000
+      }
+    },
+    "droidCore": {
+      "enabled": true
+    },
+    "managedComputers": {
+      "usedHours": 0,
+      "includedHours": 10,
+      "startDate": 1770623326000,
+      "endDate": 1772178526000
+    }
+  }
+}
+```
+
+Legacy token response shape:
 
 ```jsonc
 {
@@ -67,7 +108,11 @@ Returns token usage for the current billing period.
 
 ### Plan Detection
 
-Plan is inferred from `standard.totalAllowance`:
+Plan is read from `usage.plan`, `usage.planName`, `usage.tier`, `usage.usageMode`, or `usage.currentUsageMode` when present.
+
+If `droidCore.enabled`, `droidCore.available`, or `droidCore.included` is true, Usage appends `+ Droid Core`.
+
+For legacy responses, plan is inferred from `standard.totalAllowance`:
 
 | Allowance | Plan |
 |---|---|

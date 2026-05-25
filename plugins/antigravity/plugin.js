@@ -5,6 +5,9 @@
     "https://daily-cloudcode-pa.googleapis.com",
     "https://cloudcode-pa.googleapis.com",
   ]
+  var AUTH_STATUS_KEY = "antigravityAuthStatus"
+  var LEGACY_OAUTH_KEY = "jetskiStateSync.agentManagerInitState"
+  var UNIFIED_OAUTH_KEY = "antigravityUnifiedStateSync.oauthToken"
   var FETCH_MODELS_PATH = "/v1internal:fetchAvailableModels"
   var GOOGLE_OAUTH_URL = "https://oauth2.googleapis.com/token"
   var GOOGLE_CLIENT_ID = "1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com"
@@ -63,15 +66,21 @@
 
   // --- SQLite credential reading ---
 
+  function readStateValue(ctx, key) {
+    var rows = ctx.host.sqlite.query(
+      STATE_DB,
+      "SELECT value FROM ItemTable WHERE key = '" + key + "' LIMIT 1"
+    )
+    var parsed = ctx.util.tryParseJson(rows)
+    if (!parsed || !parsed.length || !parsed[0].value) return null
+    return parsed[0].value
+  }
+
   function loadApiKey(ctx) {
     try {
-      var rows = ctx.host.sqlite.query(
-        STATE_DB,
-        "SELECT value FROM ItemTable WHERE key = 'antigravityAuthStatus' LIMIT 1"
-      )
-      var parsed = ctx.util.tryParseJson(rows)
-      if (!parsed || !parsed.length || !parsed[0].value) return null
-      var auth = ctx.util.tryParseJson(parsed[0].value)
+      var raw = readStateValue(ctx, AUTH_STATUS_KEY)
+      if (!raw) return null
+      var auth = ctx.util.tryParseJson(raw)
       if (!auth || !auth.apiKey) return null
       return auth.apiKey
     } catch (e) {
@@ -80,31 +89,73 @@
     }
   }
 
-  function loadProtoTokens(ctx) {
-    try {
-      var rows = ctx.host.sqlite.query(
-        STATE_DB,
-        "SELECT value FROM ItemTable WHERE key = 'jetskiStateSync.agentManagerInitState' LIMIT 1"
-      )
-      var parsed = ctx.util.tryParseJson(rows)
-      if (!parsed || !parsed.length || !parsed[0].value) return null
-      var raw = ctx.base64.decode(parsed[0].value)
-      var outer = readFields(raw)
-      if (!outer[6] || outer[6].type !== 2) return null
-      var inner = readFields(outer[6].data)
-      var accessToken = (inner[1] && inner[1].type === 2) ? inner[1].data : null
-      var refreshToken = (inner[3] && inner[3].type === 2) ? inner[3].data : null
-      var expirySeconds = null
-      if (inner[4] && inner[4].type === 2) {
-        var ts = readFields(inner[4].data)
-        if (ts[1] && ts[1].type === 0) expirySeconds = ts[1].value
-      }
-      if (!accessToken) return null
-      return { accessToken: accessToken, refreshToken: refreshToken, expirySeconds: expirySeconds }
-    } catch (e) {
-      ctx.host.log.warn("failed to read proto tokens from antigravity DB: " + String(e))
-      return null
+  function parseOauthTokenInfo(raw) {
+    var inner = readFields(raw)
+    var accessToken = (inner[1] && inner[1].type === 2) ? inner[1].data : null
+    var refreshToken = (inner[3] && inner[3].type === 2) ? inner[3].data : null
+    var expirySeconds = null
+    if (inner[4] && inner[4].type === 2) {
+      var ts = readFields(inner[4].data)
+      if (ts[1] && ts[1].type === 0) expirySeconds = ts[1].value
     }
+    if (!accessToken) return null
+    return {
+      accessToken: accessToken,
+      refreshToken: refreshToken,
+      expirySeconds: expirySeconds,
+    }
+  }
+
+  function parseLegacyOauthToken(ctx, rawValue) {
+    var raw = ctx.base64.decode(rawValue)
+    var outer = readFields(raw)
+    if (!outer[6] || outer[6].type !== 2) return null
+    return parseOauthTokenInfo(outer[6].data)
+  }
+
+  function parseUnifiedOauthToken(ctx, rawValue) {
+    var decoded = ctx.base64.decode(rawValue)
+    var candidates = String(decoded).match(/[A-Za-z0-9+/=]{32,}/g) || []
+
+    for (var i = 0; i < candidates.length; i++) {
+      var candidate = candidates[i]
+      for (var start = 0; start < 4 && start < candidate.length; start++) {
+        for (var endTrim = 0; endTrim < 4; endTrim++) {
+          var normalized =
+            endTrim > 0
+              ? candidate.slice(start, candidate.length - endTrim)
+              : candidate.slice(start)
+          if (normalized.length < 32) continue
+
+          var parsed =
+            parseOauthTokenInfo(ctx.base64.decode(normalized)) ||
+            parseLegacyOauthToken(ctx, normalized)
+          if (parsed) return parsed
+        }
+      }
+    }
+
+    return null
+  }
+
+  function loadProtoTokens(ctx) {
+    var keys = [LEGACY_OAUTH_KEY, UNIFIED_OAUTH_KEY]
+
+    for (var i = 0; i < keys.length; i++) {
+      try {
+        var rawValue = readStateValue(ctx, keys[i])
+        if (!rawValue) continue
+
+        var parsed =
+          parseLegacyOauthToken(ctx, rawValue) ||
+          parseUnifiedOauthToken(ctx, rawValue)
+        if (parsed) return parsed
+      } catch (e) {
+        ctx.host.log.warn("failed to read proto tokens from antigravity DB: " + String(e))
+      }
+    }
+
+    return null
   }
 
   // --- Google OAuth token refresh ---
@@ -452,6 +503,7 @@
   function probe(ctx) {
     var apiKey = loadApiKey(ctx)
     var proto = loadProtoTokens(ctx)
+    if (!apiKey && proto && proto.accessToken) apiKey = proto.accessToken
 
     var lsResult = probeLs(ctx, apiKey)
     if (lsResult) return lsResult
@@ -491,5 +543,5 @@
     throw "Start Antigravity and try again."
   }
 
-  globalThis.__openusage_plugin = { id: "antigravity", probe: probe }
+  globalThis.__usage_plugin = { id: "antigravity", probe: probe }
 })()

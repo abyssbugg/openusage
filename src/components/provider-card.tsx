@@ -10,7 +10,7 @@ import { SkeletonLines } from "@/components/skeleton-lines"
 import { PluginError } from "@/components/plugin-error"
 import { useNowTicker } from "@/hooks/use-now-ticker"
 import { REFRESH_COOLDOWN_MS, type DisplayMode, type ResetTimerDisplayMode } from "@/lib/settings"
-import type { ManifestLine, MetricLine, PluginLink } from "@/lib/plugin-types"
+import type { ManifestLine, MetricLine, PluginLink, ProgressFormat } from "@/lib/plugin-types"
 import { groupLinesByType } from "@/lib/group-lines-by-type"
 import { clamp01, formatCountNumber, formatFixedPrecisionNumber } from "@/lib/utils"
 import { calculateDeficit, calculatePaceStatus, type PaceStatus } from "@/lib/pace-status"
@@ -91,7 +91,6 @@ export function ProviderCard({
   lastManualRefreshAt,
   onRetry,
   scopeFilter = "all",
-  displayMode,
   resetTimerDisplayMode = "relative",
   onResetTimerDisplayModeToggle,
 }: ProviderCardProps) {
@@ -257,7 +256,6 @@ export function ProviderCard({
                     <MetricLineRenderer
                       key={`${line.label}-${gi}-${li}`}
                       line={line}
-                      displayMode={displayMode}
                       resetTimerDisplayMode={resetTimerDisplayMode}
                       onResetTimerDisplayModeToggle={onResetTimerDisplayModeToggle}
                       now={now}
@@ -270,7 +268,6 @@ export function ProviderCard({
                     <MetricLineRenderer
                       key={`${line.label}-${gi}-${li}`}
                       line={line}
-                      displayMode={displayMode}
                       resetTimerDisplayMode={resetTimerDisplayMode}
                       onResetTimerDisplayModeToggle={onResetTimerDisplayModeToggle}
                       now={now}
@@ -287,15 +284,28 @@ export function ProviderCard({
   )
 }
 
+function formatProgressAmount(amount: number, format: ProgressFormat): string {
+  if (format.kind === "percent") return `${Math.round(amount)}%`
+  if (format.kind === "dollars") return `$${formatFixedPrecisionNumber(amount)}`
+  return `${formatCountNumber(amount)} ${format.suffix}`
+}
+
+function formatProgressUsageText(line: Extract<MetricLine, { type: "progress" }>): { used: string; left: string } {
+  const usedText = formatProgressAmount(line.used, line.format)
+  const leftText = formatProgressAmount(Math.max(0, line.limit - line.used), line.format)
+  return {
+    used: `${usedText} used`,
+    left: `${leftText} left`,
+  }
+}
+
 function MetricLineRenderer({
   line,
-  displayMode,
   resetTimerDisplayMode,
   onResetTimerDisplayModeToggle,
   now,
 }: {
   line: MetricLine
-  displayMode: DisplayMode
   resetTimerDisplayMode: ResetTimerDisplayMode
   onResetTimerDisplayModeToggle?: () => void
   now: number
@@ -350,19 +360,8 @@ function MetricLineRenderer({
     const periodDurationMs = line.periodDurationMs
     const hasPaceContext = Number.isFinite(resetsAtMs) && Number.isFinite(periodDurationMs)
     const hasTimeMarkerContext = hasPaceContext && periodDurationMs! > 0
-    const shownAmount =
-      displayMode === "used"
-        ? line.used
-        : Math.max(0, line.limit - line.used)
-    const percent = Math.round(clamp01(shownAmount / line.limit) * 10000) / 100
-    const leftSuffix = displayMode === "left" ? " left" : ""
-
-    const primaryText =
-      line.format.kind === "percent"
-        ? `${Math.round(shownAmount)}%${leftSuffix}`
-        : line.format.kind === "dollars"
-          ? `$${formatFixedPrecisionNumber(shownAmount)}${leftSuffix}`
-          : `${formatCountNumber(shownAmount)} ${line.format.suffix}${leftSuffix}`
+    const percent = Math.round(clamp01(line.used / line.limit) * 10000) / 100
+    const usageText = formatProgressUsageText(line)
 
     const resetLabel = line.resetsAt
       ? resetTimerDisplayMode === "absolute"
@@ -394,8 +393,7 @@ function MetricLineRenderer({
       ? (() => {
           const periodStartMs = resetsAtMs - periodDurationMs!
           const elapsedFraction = clamp01((now - periodStartMs) / periodDurationMs!)
-          const elapsedPercent = elapsedFraction * 100
-          return displayMode === "used" ? elapsedPercent : 100 - elapsedPercent
+          return elapsedFraction * 100
         })()
       : undefined
     const isLimitReached = line.used >= line.limit
@@ -408,7 +406,7 @@ function MetricLineRenderer({
             periodDurationMs: periodDurationMs!,
             resetsAtMs,
             nowMs: now,
-            displayMode,
+            displayMode: "used",
           })
         : null
 
@@ -416,7 +414,7 @@ function MetricLineRenderer({
       ? calculateDeficit(line.used, line.limit, resetsAtMs, periodDurationMs!, now)
       : null
     const deficitText = deficit !== null
-      ? formatDeficitText(deficit, line.format, displayMode)
+      ? formatDeficitText(deficit, line.format, "used")
       : null
     const runsOutText = hasPaceContext && !isLimitReached
       ? formatRunsOutText({
@@ -442,12 +440,17 @@ function MetricLineRenderer({
           indicatorColor={line.color}
           markerValue={paceMarkerValue}
         />
-        <div className="flex justify-between items-center mt-1.5">
+        <div className="flex justify-between items-center gap-3 mt-1.5">
           <span className="text-xs text-muted-foreground tabular-nums">
-            {primaryText}
+            {usageText.used}
           </span>
-          {secondaryText && (
-            resetTooltipText ? (
+          <span className="text-xs text-muted-foreground tabular-nums text-right">
+            {usageText.left}
+          </span>
+        </div>
+        {secondaryText && (
+          <div className="flex justify-end items-center mt-0.5">
+            {resetTooltipText ? (
               <Tooltip>
                 <TooltipTrigger
                   render={(props) =>
@@ -481,9 +484,9 @@ function MetricLineRenderer({
               <span className="text-xs text-muted-foreground">
                 {secondaryText}
               </span>
-            )
-          )}
-        </div>
+            )}
+          </div>
+        )}
         {(deficitText || runsOutText) && (
           <div className="flex justify-between items-center mt-0.5">
             {deficitText && (
