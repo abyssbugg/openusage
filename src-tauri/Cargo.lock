@@ -5751,7 +5751,7 @@ dependencies = [
 
 [[package]]
 name = "usage-meter"
-version = "0.6.15"
+version = "0.6.16"
 dependencies = [
  "aes-gcm",
  "base64 0.22.1",

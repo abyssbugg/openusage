@@ -7,6 +7,8 @@
   const WORKOS_AUTH_URL = "https://api.workos.com/user_management/authenticate"
   const APP_URL = "https://app.factory.ai"
   const USAGE_URL = "https://api.factory.ai/api/organization/subscription/usage"
+  const BILLING_LIMITS_URL = "https://api.factory.ai/api/billing/limits"
+  const COMPUTE_USAGE_URL = "https://api.factory.ai/api/organization/compute-usage"
   const TOKEN_REFRESH_THRESHOLD_MS = 24 * 60 * 60 * 1000 // 24 hours before expiry
 
   function decodeHexUtf8(hex) {
@@ -419,6 +421,151 @@
     return null
   }
 
+  function requestGetJson(ctx, accessToken, url, label) {
+    try {
+      const resp = ctx.util.request({
+        method: "GET",
+        url,
+        headers: buildUsageHeaders(accessToken),
+        timeoutMs: 10000,
+      })
+      if (resp.status < 200 || resp.status >= 300) {
+        ctx.host.log.warn(label + " request failed: status=" + resp.status)
+        return null
+      }
+      const parsed = ctx.util.tryParseJson(resp.bodyText)
+      if (!isObject(parsed)) {
+        ctx.host.log.warn(label + " response invalid JSON")
+        return null
+      }
+      return parsed
+    } catch (e) {
+      ctx.host.log.warn(label + " request exception: " + String(e))
+      return null
+    }
+  }
+
+  function hasExtendedUsageFields(usage) {
+    if (!isObject(usage)) return false
+    return Boolean(
+      firstObject(
+        usage.standardUsage,
+        usage.standardLimits,
+        usage.usageLimits,
+        usage.limits,
+        usage.extraUsage,
+        usage.extra_usage,
+        usage.extraUsageBalance,
+        usage.extra,
+        usage.overage,
+        usage.managedComputers,
+        usage.managedComputerUsage,
+        usage.managedCompute,
+        usage.compute,
+        usage.computers,
+        droidCoreConfig(usage),
+      )
+    )
+  }
+
+  function windowMetricWithDuration(metric, periodDurationMs) {
+    if (!isObject(metric)) return null
+    const out = {}
+
+    const usedPercent = firstNumber(metric, [
+      "usedPercent",
+      "percentUsed",
+      "usagePercent",
+      "percentage",
+      "percent",
+    ])
+    if (usedPercent !== null) out.usedPercent = usedPercent
+
+    const windowEnd = firstValue(metric, ["windowEnd", "endDate", "endAt", "resetsAt", "resetAt"])
+    if (windowEnd !== undefined && windowEnd !== null) out.endDate = windowEnd
+
+    const secondsRemaining = firstNumber(metric, ["secondsRemaining", "remainingSeconds", "secondsLeft"])
+    if (!("endDate" in out) && secondsRemaining !== null) {
+      out.endDate = Date.now() + (secondsRemaining * 1000)
+    }
+
+    if (periodDurationMs > 0) out.periodDurationMs = periodDurationMs
+    return Object.keys(out).length ? out : null
+  }
+
+  function mergeSupplementalUsage(ctx, accessToken, data, usage) {
+    const merged = isObject(usage) ? Object.assign({}, usage) : {}
+
+    const shouldFetchSupplemental = !hasExtendedUsageFields(merged) && (
+      data.globalLimit !== undefined || data.userLimits !== undefined
+    )
+    if (!shouldFetchSupplemental) return merged
+
+    const billing = requestGetJson(ctx, accessToken, BILLING_LIMITS_URL, "billing limits")
+    if (isObject(billing)) {
+      const limits = firstObject(billing.limits, billing.usageLimits)
+      const standardLimits = limits && firstObject(limits.standard, limits.standardUsage)
+      if (standardLimits && !firstObject(merged.standardUsage, merged.standardLimits, merged.usageLimits, merged.limits)) {
+        const fiveHour = windowMetricWithDuration(firstObject(
+          standardLimits.fiveHour,
+          standardLimits.fiveHourUsage,
+          standardLimits.five_hour,
+          standardLimits["5Hour"],
+          standardLimits["5-hour"],
+        ), 5 * 60 * 60 * 1000)
+        const weekly = windowMetricWithDuration(firstObject(
+          standardLimits.weekly,
+          standardLimits.weeklyUsage,
+          standardLimits.week,
+        ), 7 * 24 * 60 * 60 * 1000)
+        const monthly = windowMetricWithDuration(firstObject(
+          standardLimits.monthly,
+          standardLimits.monthlyUsage,
+          standardLimits.month,
+        ), 30 * 24 * 60 * 60 * 1000)
+        merged.standardUsage = {}
+        if (fiveHour) merged.standardUsage.fiveHour = fiveHour
+        if (weekly) merged.standardUsage.weekly = weekly
+        if (monthly) merged.standardUsage.monthly = monthly
+      }
+
+      const extraUsageBalanceCents = firstNumber(billing, ["extraUsageBalanceCents", "extra_usage_balance_cents"])
+      if (
+        extraUsageBalanceCents !== null &&
+        !firstObject(merged.extraUsage, merged.extra_usage, merged.extraUsageBalance, merged.extra, merged.overage)
+      ) {
+        merged.extraUsage = { remainingCents: extraUsageBalanceCents }
+      }
+
+      const coreLimits = limits && firstObject(limits.core, limits.droidCore, limits.droid_core)
+      if (coreLimits && !droidCoreConfig(merged)) {
+        merged.droidCore = { enabled: true }
+      }
+    }
+
+    const compute = requestGetJson(ctx, accessToken, COMPUTE_USAGE_URL, "compute usage")
+    if (isObject(compute) && !firstObject(
+      merged.managedComputers,
+      merged.managedComputerUsage,
+      merged.computers,
+      merged.compute,
+      merged.managedCompute,
+    )) {
+      const limitMs = firstNumber(compute, ["limitMs", "includedMs", "allowanceMs", "totalMs", "limit"])
+      if (limitMs !== null && limitMs > 0) {
+        const usedMs = firstNumber(compute, ["orgUsageMs", "usageMs", "usedMs", "used"]) || 0
+        merged.managedComputers = {
+          usedHours: usedMs / (60 * 60 * 1000),
+          includedHours: limitMs / (60 * 60 * 1000),
+          startDate: firstValue(compute, ["periodStart", "startDate", "startAt"]),
+          endDate: firstValue(compute, ["periodEnd", "endDate", "endAt"]),
+        }
+      }
+    }
+
+    return merged
+  }
+
   function normalizePercent(value, ratioHint) {
     const n = asNumber(value)
     if (n === null) return null
@@ -637,7 +784,9 @@
       resp = ctx.util.retryOnceOnAuth({
         request: (token) => {
           try {
-            return fetchUsage(ctx, token || accessToken)
+            const effectiveToken = token || accessToken
+            accessToken = effectiveToken
+            return fetchUsage(ctx, effectiveToken)
           } catch (e) {
             ctx.host.log.error("usage request exception: " + String(e))
             if (didRefresh) {
@@ -680,10 +829,11 @@
       throw "Usage response invalid. Try again later."
     }
 
-    const usage = data.usage
+    let usage = data.usage
     if (!usage) {
       throw "Usage response missing data. Try again later."
     }
+    usage = mergeSupplementalUsage(ctx, accessToken, data, usage)
 
     const lines = []
 

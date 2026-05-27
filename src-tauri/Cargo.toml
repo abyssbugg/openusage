@@ -1,6 +1,6 @@
 [package]
 name = "usage-meter"
-version = "0.6.15"
+version = "0.6.16"
 description = "Usage is an open source AI subscription limit tracker"
 authors = ["Robin Ebers"]
 edition = "2024"

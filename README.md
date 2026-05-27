@@ -73,9 +73,18 @@ Build the web app:
 
     bun run build
 
-Build the macOS app:
+Build the macOS app with updater/signing settings from `tauri.conf.json` (requires release signing keys):
 
     bun run tauri build
+
+Build direct-distribution artifacts (unsigned app + dmg):
+
+    bun run build:direct
+
+Output is written to:
+
+    release/Usage.app
+    release/Usage_*.dmg
 
 Bundle plugins after plugin changes:
 

@@ -13,6 +13,8 @@ dist-ssr
 *.local
 coverage
 tmpcov-gem
+.build/
+release/
 
 # Editor directories and files
 .vscode/
